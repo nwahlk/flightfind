@@ -1,0 +1,17 @@
+# 核心依赖
+playwright>=1.40.0
+APScheduler>=3.10.0
+aiosqlite>=0.19.0
+pydantic>=2.0.0
+PyYAML>=6.0.0
+
+# 网络请求
+aiohttp>=3.9.0
+
+# 日志
+python-json-logger>=2.0.0
+
+# 开发依赖（可选）
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+black>=23.0.0

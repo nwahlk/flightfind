@@ -1,0 +1,42 @@
+# FlightFind 机票监控配置示例
+
+monitor:
+  check_interval: 30  # 检查间隔，单位：分钟
+  headless: true      # true=无界面运行，false=显示浏览器窗口（调试用）
+
+routes:
+  - from: "深圳"
+    to: "上海"
+    low_price_threshold: 600
+    dates:
+      mode: "absolute"
+      absolute_dates: ["2025-04-01", "2025-04-02", "2025-04-03"]
+
+  - from: "上海"
+    to: "深圳"
+    low_price_threshold: 800
+    dates:
+      mode: "absolute"
+      absolute_dates: ["2025-04-04", "2025-04-05", "2025-04-06"]
+
+default_dates:
+  mode: "absolute"
+  absolute_dates: []
+
+notifications:
+  email:
+    enabled: true
+    smtp_server: "smtp.qq.com"
+    smtp_port: 465
+    username: "your_email@qq.com"
+    password: "your_auth_code"
+    to: ["your_email@qq.com"]
+
+  webhook:
+    enabled: false
+    url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxx"
+
+  bark:
+    enabled: false
+    device_key: "your_device_key"
+    server: "https://api.day.app"

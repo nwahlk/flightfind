@@ -1,0 +1,27 @@
+# Config with credentials (use config.example.yaml as template)
+config.yaml
+
+# Runtime data
+data/
+logs/
+
+# Debug artifacts
+ctrip_page.html
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Claude Code internal
+.claude/

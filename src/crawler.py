@@ -11,6 +11,7 @@ import glob
 import sys
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page, ElementHandle
 from src.config import Route
+from src.base_crawler import FlightCrawler
 from src.exceptions import (
     CrawlerError, NetworkError, TimeoutError, ParseError,
     AntiBotError, BrowserCrashError
@@ -72,8 +73,9 @@ def get_city_code(city_name: str) -> str:
     return CITY_CODE_MAP.get(city_name, city_name)
 
 
-class CtripCrawler:
+class CtripCrawler(FlightCrawler):
     """携程机票爬虫"""
+    source = "ctrip"
 
     def __init__(self, headless: bool = True, debug_save_html: bool = False,
                  debug_html_path: Optional[Path] = None,
@@ -368,9 +370,9 @@ class CtripCrawler:
                 'flight_no': flight_no.strip() if flight_no else 'Unknown',
                 'airline': airline.strip() if airline else 'Unknown',
                 'price': price,
-                'date': flight_date.isoformat(),
                 'route_from': route.from_city,
-                'route_to': route.to_city
+                'route_to': route.to_city,
+                'source': self.source
             }
 
         except Exception as e:

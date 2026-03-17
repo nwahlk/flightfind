@@ -1,6 +1,7 @@
 # FlightFind 机票监控配置示例
 
 monitor:
+  default_source: "ctrip"  # 数据源: "ctrip" 或 "feizhu"
   check_interval: 30  # 检查间隔，单位：分钟
   headless: true      # true=无界面运行，false=显示浏览器窗口（调试用）
 

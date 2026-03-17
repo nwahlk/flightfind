@@ -115,12 +115,14 @@ class MonitorConfig:
     """监控配置"""
     check_interval: int = 30
     headless: bool = True
+    default_source: str = "feizhu"
 
     @classmethod
     def from_dict(cls, data: dict) -> "MonitorConfig":
         return cls(
             check_interval=data.get("check_interval", 30),
-            headless=data.get("headless", True)
+            headless=data.get("headless", True),
+            default_source=data.get("default_source", "feizhu")
         )
 
 
@@ -200,6 +202,14 @@ def load_config(config_path: Union[str, Path]) -> AppConfig:
 
 def _validate_config(config: AppConfig) -> None:
     """验证配置有效性"""
+    # 验证default_source
+    valid_sources = {'ctrip', 'feizhu'}
+    if config.monitor.default_source not in valid_sources:
+        raise ConfigError(
+            f"default_source must be one of {valid_sources}, "
+            f"got: {config.monitor.default_source}"
+        )
+
     if not config.routes:
         raise ConfigError("至少配置一条航线")
 

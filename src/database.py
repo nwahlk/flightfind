@@ -115,15 +115,16 @@ class Database:
         flight_date: date,
         flight_no: str,
         airline: str,
-        price: int
+        price: int,
+        source: str = "ctrip"
     ) -> None:
         """保存价格历史"""
         async with self._get_connection() as db:
             await db.execute('''
                 INSERT INTO price_history
-                (route_from, route_to, flight_date, flight_no, airline, price)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (route_from, route_to, flight_date, flight_no, airline, price))
+                (route_from, route_to, flight_date, flight_no, airline, price, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (route_from, route_to, flight_date, flight_no, airline, price, source))
             await db.commit()
 
     async def save_alert(
@@ -135,17 +136,18 @@ class Database:
         airline: str,
         price: int,
         threshold: int,
-        channels: List[str]
+        channels: List[str],
+        source: str = "ctrip"
     ) -> None:
         """保存低价提醒"""
         async with self._get_connection() as db:
             await db.execute('''
                 INSERT INTO low_price_alerts
-                (route_from, route_to, flight_date, flight_no, airline, price, threshold, notification_channels)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (route_from, route_to, flight_date, flight_no, airline, price, threshold, notification_channels, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 route_from, route_to, flight_date, flight_no, airline,
-                price, threshold, ','.join(channels)
+                price, threshold, ','.join(channels), source
             ))
             await db.commit()
 
@@ -157,13 +159,14 @@ class Database:
         flight_date: Optional[str],
         status: str,
         message: Optional[str] = None,
-        execution_time_ms: Optional[int] = None
+        execution_time_ms: Optional[int] = None,
+        source: str = "ctrip"
     ) -> None:
         """记录执行日志"""
         async with self._get_connection() as db:
             await db.execute('''
                 INSERT INTO execution_logs
-                (job_id, route_from, route_to, flight_date, status, message, execution_time_ms)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (job_id, route_from, route_to, flight_date, status, message, execution_time_ms))
+                (job_id, route_from, route_to, flight_date, status, message, execution_time_ms, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (job_id, route_from, route_to, flight_date, status, message, execution_time_ms, source))
             await db.commit()

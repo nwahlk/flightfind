@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 import aiosqlite
 from src.exceptions import DatabaseError
+from src.utils import logger
 
 
 class Database:
@@ -24,6 +25,7 @@ class Database:
         async with self._get_connection() as db:
             await db.executescript(self._get_schema())
             await db.commit()
+        await self.migrate_add_source_column()
 
     @asynccontextmanager
     async def _get_connection(self):
@@ -83,6 +85,28 @@ class Database:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         '''
+
+    async def migrate_add_source_column(self) -> None:
+        """Migration to add source column to all tables"""
+        async with self._get_connection() as db:
+            for table in ['price_history', 'low_price_alerts', 'execution_logs']:
+                try:
+                    await db.execute(f"ALTER TABLE {table} ADD COLUMN source TEXT DEFAULT 'ctrip'")
+                    logger.info(f"Added source column to {table}")
+                except aiosqlite.OperationalError as e:
+                    if "duplicate column name" not in str(e).lower():
+                        raise
+            indexes = [
+                "CREATE INDEX IF NOT EXISTS idx_price_source ON price_history(source)",
+                "CREATE INDEX IF NOT EXISTS idx_alert_source ON low_price_alerts(source)",
+                "CREATE INDEX IF NOT EXISTS idx_log_source ON execution_logs(source)"
+            ]
+            for index_sql in indexes:
+                try:
+                    await db.execute(index_sql)
+                except aiosqlite.OperationalError:
+                    pass
+            await db.commit()
 
     async def save_price_history(
         self,

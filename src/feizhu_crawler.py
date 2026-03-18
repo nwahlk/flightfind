@@ -150,12 +150,20 @@ class FeizhuCrawler(FlightCrawler):
                 logger.debug(f"[{self.source}] 未找到价格元素")
                 return None
 
+            # Departure airport - .css里flight-port
+            departure_airport = await self._get_text(item, ['.css里flight-port'])
+
+            # Arrival airport - .port-arr
+            arrival_airport = await self._get_text(item, ['port-arr'])
+
             return {
                 'flight_no': flight_no.strip(),
                 'airline': airline.strip(),
                 'price': price,
                 'route_from': route.from_city,
                 'route_to': route.to_city,
+                'departure_airport': departure_airport,
+                'arrival_airport': arrival_airport,
                 'source': self.source
             }
         except Exception as e:

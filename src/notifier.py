@@ -51,16 +51,49 @@ class Notifier:
 
         self._history.add(alert_id)
 
+        # 获取机场名称
+        from src.config import get_airport_name
+        departure_airport = flight.get('departure_airport', '')
+        arrival_airport = flight.get('arrival_airport', '')
+        departure_name = get_airport_name(departure_airport) if departure_airport else ''
+        arrival_name = get_airport_name(arrival_airport) if arrival_airport else ''
+
+        # 构建航线信息（包含机场）
+        departure_part = f"出发：{departure_name}" if departure_name else ""
+        arrival_part = f"到达：{arrival_name}" if arrival_name else ""
+
+        route_info = f"{flight['route_from']}({departure_part}) → {flight['route_to']}({arrival_part})"
+
         # 构建消息 - 添加来源标签
         source_label = f"【{flight.get('source', '未知')}】"
-        title = f"✈️ 低价机票: {flight['route_from']} → {flight['route_to']} {source_label}"
-        content = f"""
-航班: {flight['flight_no']}
-航空: {flight['airline']}
-日期: {flight_date.strftime('%Y-%m-%d')}
+        title = f"✈️ 低价机票: {route_info} {source_label}"
+
+        # 邮件内容（包含机场信息）
+        email_body = f"""
+{route_info} ({flight_date.strftime('%Y-%m-%d')})
+航班: {flight['flight_no']} ({flight['airline']})
 价格: ¥{flight['price']}
+{departure_part}
+{arrival_part}
 阈值: ¥{threshold}
 来源: {flight.get('source', '未知')}
+            """.strip()
+
+        # Webhook 内容（包含机场信息）
+        webhook_content = f"""{title}
+{route_info} ({flight_date.strftime('%Y-%m-%d')})
+航班: {flight['flight_no']} ({flight['airline']})
+价格: ¥{flight['price']}
+{departure_part}
+{arrival_part}
+阈值: ¥{threshold}
+来源: {flight.get('source', '未知')}
+            """.strip()
+
+        # Bark 内容（简化，避免字符限制）
+        bark_content = f"""{flight['route_from']} → {flight['route_to']}
+航班: {flight['flight_no']}
+价格: ¥{flight['price']}
             """.strip()
 
         # 发送通知
@@ -68,13 +101,13 @@ class Notifier:
         source = flight.get('source', '未知')
 
         if self.config.email.enabled:
-            tasks.append(self._send_email(title, content, source))
+            tasks.append(self._send_email(title, email_body, source))
 
         if self.config.webhook.enabled:
-            tasks.append(self._send_webhook(title, content, source))
+            tasks.append(self._send_webhook(title, webhook_content, source))
 
         if self.config.bark.enabled:
-            tasks.append(self._send_bark(title, content, source))
+            tasks.append(self._send_bark(title, bark_content, source))
 
         if tasks:
             import asyncio

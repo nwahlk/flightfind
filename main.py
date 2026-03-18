@@ -18,6 +18,7 @@ from typing import List
 from src.config import load_config, Route
 from src.database import Database
 from src.crawler import CtripCrawler
+from src.feizhu_crawler import FeizhuCrawler
 from src.notifier import Notifier
 from src.utils import setup_logging
 import logging
@@ -57,9 +58,13 @@ class FlightMonitor:
         logger.info("数据库初始化完成")
 
         # 初始化爬虫
-        self.crawler = CtripCrawler(headless=self.config.monitor.headless)
+        if self.config.monitor.default_source == "feizhu":
+            self.crawler = FeizhuCrawler(headless=self.config.monitor.headless)
+        else:
+            self.crawler = CtripCrawler(headless=self.config.monitor.headless)
         await self.crawler.init()
         logger.info("浏览器初始化完成")
+        logger.info(f"使用数据源: {self.config.monitor.default_source}")
 
         # 初始化通知器
         self.notifier = Notifier(self.config.notifications)
@@ -87,13 +92,15 @@ class FlightMonitor:
 
                     if not flights:
                         logger.warning(f"未找到航班: {route.from_city} -> {route.to_city}")
+                        source = self.crawler.source if hasattr(self.crawler, 'source') else self.config.monitor.default_source
                         await self.db.log_execution(
                             job_id=job_id,
                             route_from=route.from_city,
                             route_to=route.to_city,
                             flight_date=flight_date.isoformat(),
                             status="warning",
-                            message="未找到航班"
+                            message="未找到航班",
+                            source=source
                         )
                         continue
 
@@ -105,7 +112,8 @@ class FlightMonitor:
                             flight_date=flight_date,
                             flight_no=flight['flight_no'],
                             airline=flight['airline'],
-                            price=flight['price']
+                            price=flight['price'],
+                            source=flight['source']
                         )
 
                     # 检查低价
@@ -119,7 +127,11 @@ class FlightMonitor:
                     if low_price_flights:
                         logger.info(f"发现 {len(low_price_flights)} 个低价航班！")
 
-                        await self.notifier.send_low_price_alert(low_price_flights)
+                        await self.notifier.send_low_price_alert(
+                            low_price_flights,
+                            flight_date=flight_date,
+                            threshold=route.low_price_threshold
+                        )
 
                         # 保存提醒记录
                         channels = self._get_enabled_channels()
@@ -132,9 +144,11 @@ class FlightMonitor:
                                 airline=flight['airline'],
                                 price=flight['price'],
                                 threshold=route.low_price_threshold,
-                                channels=channels
+                                channels=channels,
+                                source=flight['source']
                             )
 
+                        source = self.crawler.source if hasattr(self.crawler, 'source') else self.config.monitor.default_source
                         await self.db.log_execution(
                             job_id=job_id,
                             route_from=route.from_city,
@@ -142,12 +156,14 @@ class FlightMonitor:
                             flight_date=flight_date.isoformat(),
                             status="success",
                             message=f"发现 {len(low_price_flights)} 个低价航班",
-                            execution_time_ms=execution_time
+                            execution_time_ms=execution_time,
+                            source=source
                         )
                     else:
                         min_price = min(f['price'] for f in flights)
                         logger.info(f"最低价格: ¥{min_price} (阈值: ¥{route.low_price_threshold})")
 
+                        source = self.crawler.source if hasattr(self.crawler, 'source') else self.config.monitor.default_source
                         await self.db.log_execution(
                             job_id=job_id,
                             route_from=route.from_city,
@@ -155,18 +171,21 @@ class FlightMonitor:
                             flight_date=flight_date.isoformat(),
                             status="success",
                             message=f"最低价格: ¥{min_price}",
-                            execution_time_ms=execution_time
+                            execution_time_ms=execution_time,
+                            source=source
                         )
 
                 except Exception as e:
                     logger.error(f"检查失败: {route.from_city} -> {route.to_city} - {e}")
+                    source = self.crawler.source if hasattr(self.crawler, 'source') else self.config.monitor.default_source
                     await self.db.log_execution(
                         job_id=job_id,
                         route_from=route.from_city,
                         route_to=route.to_city,
                         flight_date=flight_date.isoformat(),
                         status="failed",
-                        message=str(e)
+                        message=str(e),
+                        source=source
                     )
 
     def _get_enabled_channels(self) -> List[str]:

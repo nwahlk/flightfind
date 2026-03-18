@@ -3,10 +3,11 @@
 """
 
 import asyncio
+import re
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import date
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page, ElementHandle
 from src.base_crawler import FlightCrawler
 from src.config import Route
 from src.utils import retry_with_backoff
@@ -99,16 +100,80 @@ class FeizhuCrawler(FlightCrawler):
 
     def _build_search_url(self, from_city: str, to_city: str, date_str: str) -> str:
         """构建搜索 URL"""
-        # TODO: Determine actual Feizhu URL format
         from_code = get_feizhu_city_code(from_city)
         to_code = get_feizhu_city_code(to_city)
-        # Placeholder URL - to be replaced after investigation
-        return f"https://www.fliggy.com/trip/oneway/{from_code}-{to_code}?depdate={date_str}"
+        return f"https://sjipiao.fliggy.com/flight_search_result.htm?spm=181.11358650.flight.dflightSearch1&tripType=0&depCity={from_code}&arrCity={to_code}&depDate={date_str}&depCityName=%E6%B7%B1%E5%9C%B3&arrCityName=%E4%B8%8A%E6%B5%B7&depDate={date_str}"
 
     async def _parse_flights(self, route: Route, flight_date: date) -> List[Dict[str, Any]]:
         """解析航班列表"""
-        # TODO: Implement Feizhu-specific CSS selectors
-        return []
+        flights = []
+        items = []
+        selectors = ['.flight-list-item', '.clearfix J_FlightItem']
+
+        for selector in selectors:
+            try:
+                items = await self.page.query_selector_all(selector)
+                if items:
+                    logger.debug(f"[{self.source}] 使用选择器 {selector} 找到 {len(items)} 个航班")
+                    break
+            except Exception as e:
+                logger.debug(f"[{self.source}] 选择器 {selector} 查询失败: {e}")
+                continue
+
+        for item in items:
+            flight = await self._parse_single_flight(item, route, flight_date)
+            if flight:
+                flights.append(flight)
+
+        logger.info(f"[{self.source}] 解析到 {len(flights)} 个航班")
+        return flights
+
+    async def _parse_single_flight(self, item: ElementHandle, route: Route, flight_date: date) -> Optional[Dict[str, Any]]:
+        """解析单个航班"""
+        try:
+            # Flight number - [data-flight-no]
+            flight_no = await self._get_text(item, ['[data-flight-no]'])
+
+            # Airline - [data-airline]
+            airline = await self._get_text(item, ['[data-airline]'])
+
+            # Price - [data-price]
+            price_elem = await item.query_selector('[data-price]')
+            if price_elem:
+                price_text = await price_elem.inner_text()
+                price_match = re.search(r'¥(\d+)', price_text)
+                if price_match:
+                    price = int(price_match.group(1))
+                else:
+                    price = int(re.search(r'\d+', price_text).group(0))
+            else:
+                logger.debug(f"[{self.source}] 未找到价格元素")
+                return None
+
+            return {
+                'flight_no': flight_no.strip(),
+                'airline': airline.strip(),
+                'price': price,
+                'route_from': route.from_city,
+                'route_to': route.to_city,
+                'source': self.source
+            }
+        except Exception as e:
+            logger.debug(f"[{self.source}] 解析航班失败: {e}")
+            return None
+
+    async def _get_text(self, item: ElementHandle, selectors: list) -> str:
+        """尝试多个选择器获取文本"""
+        for selector in selectors:
+            try:
+                elem = await item.query_selector(selector)
+                if elem:
+                    text = await elem.inner_text()
+                    if text:
+                        return text.strip()
+            except Exception:
+                continue
+        return ""
 
     async def close(self) -> None:
         """关闭浏览器"""

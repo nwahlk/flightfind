@@ -3,6 +3,25 @@
 """
 
 from dataclasses import dataclass, field
+
+AIRPORT_NAMES = {
+    'PEK': '北京首都', 'PKX': '大兴',
+    'SHA': '虹桥', 'PVG': '浦东',
+    'CAN': '白云', 'SZX': '宝安',
+    'CTU': '双流', 'KMG': '长水',
+    'XIY': '咸阳', 'CKG': '江北',
+    'TAO': '胶东', 'TSN': '滨海',
+    'DLC': '大连', 'XMN': '厦门',
+    'KMG': '昆明', 'CSX': '长沙',
+    'CGO': '郑州', 'SHE': '沈阳',
+    'TNA': '济南', 'HRB': '哈尔滨',
+    'SYX': '三亚', 'HAK': '海口', 'FOC': '福州',
+    'NNG': '南宁', 'KWE': '贵阳', 'LHW': '银川',
+    'INC': '西宁', 'XNN': '拉萨', 'URC': '呼和浩特',
+    'SJW': '石家庄', 'TYN': '长春', 'CGQ': '温州',
+    'WNZ': '宁波', 'HFE': '合肥', 'KHN': '南昌',
+    'KWL': '桂林', 'LJG': '丽江'
+}
 from datetime import date
 from pathlib import Path
 from typing import List, Literal, Optional, Union
@@ -232,3 +251,8 @@ def _validate_config(config: AppConfig) -> None:
 
     if not has_notification:
         raise ConfigError("至少启用一个通知渠道")
+
+
+def get_airport_name(airport_code: str) -> str:
+    """获取机场名称"""
+    return AIRPORT_NAMES.get(airport_code, airport_code)

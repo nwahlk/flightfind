@@ -18,6 +18,8 @@ from src.config import (
     BarkConfig,
     NotificationsConfig,
     load_config,
+    get_airport_name,
+    AIRPORT_NAMES,
 )
 from src.exceptions import ConfigError
 
@@ -445,3 +447,31 @@ notifications:
             assert "至少启用一个通知渠道" in str(exc_info.value)
         finally:
             os.unlink(temp_path)
+
+
+class TestAirportNames:
+    """测试机场名称映射"""
+
+    def test_get_airport_name_known_code(self):
+        """测试获取已知机场代码的名称"""
+        assert get_airport_name("PEK") == "北京首都"
+        assert get_airport_name("PVG") == "浦东"
+        assert get_airport_name("CAN") == "白云"
+
+    def test_get_airport_name_unknown_code(self):
+        """测试获取未知机场代码时返回代码本身"""
+        unknown_code = "XYZ"
+        assert get_airport_name(unknown_code) == unknown_code
+
+    def test_get_airport_name_empty_string(self):
+        """测试空字符串返回空字符串"""
+        assert get_airport_name("") == ""
+
+    def test_airport_names_constant(self):
+        """测试AIRPORT_NAMES常量包含预期的机场"""
+        assert "PEK" in AIRPORT_NAMES
+        assert "PVG" in AIRPORT_NAMES
+        assert "CAN" in AIRPORT_NAMES
+        assert AIRPORT_NAMES["PEK"] == "北京首都"
+        assert AIRPORT_NAMES["PVG"] == "浦东"
+        assert AIRPORT_NAMES["CAN"] == "白云"

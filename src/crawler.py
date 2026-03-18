@@ -366,13 +366,23 @@ class CtripCrawler(FlightCrawler):
             if price < 10:
                 return None
 
+            # 出发机场
+            departure_selectors = ['.flight-port', '[data-flight-port]', '.departure-airport', '[data-departure-port]']
+            departure_airport = await self._get_text(item, departure_selectors) or ''
+
+            # 到达机场
+            arrival_selectors = ['.arrival-port', '[data-arrival-port]', '.destination-airport', '[data-arrival-port]']
+            arrival_airport = await self._get_text(item, arrival_selectors) or ''
+
             return {
                 'flight_no': flight_no.strip() if flight_no else 'Unknown',
                 'airline': airline.strip() if airline else 'Unknown',
                 'price': price,
                 'route_from': route.from_city,
                 'route_to': route.to_city,
-                'source': self.source
+                'source': self.source,
+                'departure_airport': departure_airport.strip(),
+                'arrival_airport': arrival_airport.strip()
             }
 
         except Exception as e:

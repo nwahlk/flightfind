@@ -1,7 +1,7 @@
 # FlightFind 机票监控配置示例
 
 monitor:
-  default_source: "ctrip"  # 数据源: "ctrip" 或 "feizhu"
+  default_source: "spring"  # 数据源: "spring", "csair", "mu", "zh", "ho", "ctrip", "feizhu"
   check_interval: 30  # 检查间隔，单位：分钟
   headless: true      # true=无界面运行，false=显示浏览器窗口（调试用）
 
@@ -23,6 +23,14 @@ routes:
 default_dates:
   mode: "absolute"
   absolute_dates: []
+
+# 打码服务配置（用于解决滑块验证）
+captcha:
+  type: "none"  # "none" 或 "chaojiying"
+  # 超级鹰配置 (https://www.chaojiying.com)
+  chaojiying_username: ""
+  chaojiying_password: ""
+  chaojiying_soft_id: "96001"
 
 notifications:
   email:

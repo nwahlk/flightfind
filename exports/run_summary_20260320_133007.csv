@@ -1,3 +1,0 @@
-﻿route_from,route_to,flight_date,flight_no,airline,price,threshold,is_low_price,source,departure_time,arrival_time,departure_airport,arrival_airport,status,message
-深圳,上海,2026-03-25,,,,800,,csair,,,,,failed,csair did not return usable flight data
-上海,深圳,2026-03-27,,,,600,,csair,,,,,failed,csair did not return usable flight data

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-FlightFind entrypoint.
+FlightFind - 航班价格监控工具
+支持数据源: ctrip(携程), spring(春秋航空)
 """
 
 import asyncio
@@ -9,33 +10,35 @@ import signal
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 from src.config import load_config
-from src.captcha_solver import init_captcha_solver
-from src.csair_crawler import CsairCrawler
-from src.crawler import CtripCrawler
+from src.ctrip_crawler import CtripCrawler
 from src.database import Database
 from src.exporter import FlightExporter
-from src.feizhu_crawler import FeizhuCrawler
-from src.ho_crawler import HoCrawler
-from src.mu_crawler import MuCrawler
 from src.notifier import Notifier
 from src.spring_crawler import SpringCrawler
 from src.utils import setup_logging
-from src.zh_crawler import ZhCrawler
 
 logger = logging.getLogger(__name__)
 
 
+def create_crawler(source: str, headless: bool):
+    """创建爬虫实例"""
+    if source == "spring":
+        return SpringCrawler(headless=headless)
+    else:  # 默认使用 ctrip
+        return CtripCrawler(headless=headless)
+
+
 class FlightMonitor:
-    """Main monitor workflow."""
+    """航班监控主程序"""
 
     def __init__(self, config_path: Path):
         self.config_path = config_path
         self.config = None
         self.db = None
-        self.crawler = None
+        self.crawlers: Dict[str, any] = {}
         self.notifier = None
         self.exporter = None
 
@@ -44,52 +47,27 @@ class FlightMonitor:
 
         setup_logging(log_file=Path("logs/monitor.log"), level=logging.INFO)
         logger.info("=" * 50)
-        logger.info("FlightFind started")
+        logger.info("FlightFind 启动")
         logger.info("=" * 50)
-
-        # 初始化打码服务
-        if self.config.captcha:
-            captcha_config = {
-                "type": self.config.captcha.type,
-                "chaojiying_username": self.config.captcha.chaojiying_username,
-                "chaojiying_password": self.config.captcha.chaojiying_password,
-                "chaojiying_soft_id": self.config.captcha.chaojiying_soft_id,
-            }
-            init_captcha_solver(captcha_config)
-            if self.config.captcha.type == "chaojiying":
-                logger.info("打码服务已启用: 超级鹰")
 
         self.db = Database(Path("data/flights.db"))
         await self.db.init()
 
-        if self.config.monitor.default_source == "feizhu":
-            self.crawler = FeizhuCrawler(
-                headless=self.config.monitor.headless,
-                username=self.config.monitor.feizhu_username,
-                password=self.config.monitor.feizhu_password,
-            )
-        elif self.config.monitor.default_source == "csair":
-            self.crawler = CsairCrawler(headless=self.config.monitor.headless)
-        elif self.config.monitor.default_source == "spring":
-            self.crawler = SpringCrawler(headless=self.config.monitor.headless)
-        elif self.config.monitor.default_source == "mu":
-            self.crawler = MuCrawler(headless=self.config.monitor.headless)
-        elif self.config.monitor.default_source == "zh":
-            self.crawler = ZhCrawler(headless=self.config.monitor.headless)
-        elif self.config.monitor.default_source == "ho":
-            self.crawler = HoCrawler(headless=self.config.monitor.headless)
-        else:
-            self.crawler = CtripCrawler(headless=self.config.monitor.headless)
-        await self.crawler.init()
+        # 初始化所有数据源的爬虫
+        for source in self.config.monitor.sources:
+            logger.info("初始化爬虫: %s", source)
+            crawler = create_crawler(source, self.config.monitor.headless)
+            await crawler.init()
+            self.crawlers[source] = crawler
 
         self.notifier = Notifier(self.config.notifications)
         self.exporter = FlightExporter(Path("exports"))
 
-        logger.info("Source: %s", self.config.monitor.default_source)
-        logger.info("Routes: %s", len(self.config.routes))
+        logger.info("数据源: %s", ", ".join(self.config.monitor.sources))
+        logger.info("监控航线: %d 条", len(self.config.routes))
         for route in self.config.routes:
             logger.info(
-                "  - %s -> %s, threshold=%s, dates=%s",
+                "  - %s -> %s, 阈值=%d, 日期数=%d",
                 route.from_city,
                 route.to_city,
                 route.low_price_threshold,
@@ -97,31 +75,38 @@ class FlightMonitor:
             )
 
     async def run_check(self) -> None:
-        """Execute one monitoring pass."""
-        if not self.crawler:
-            logger.error("Crawler is not initialized")
+        """执行一次监控检查"""
+        if not self.crawlers:
+            logger.error("爬虫未初始化")
             return
 
+        all_export_rows = []
+
+        for source_name, crawler in self.crawlers.items():
+            logger.info("=" * 30)
+            logger.info("使用数据源: %s", source_name)
+            logger.info("=" * 30)
+
+            export_rows = await self._run_crawler(source_name, crawler)
+            all_export_rows.extend(export_rows)
+
+        # 导出汇总报告
+        if all_export_rows and self.exporter:
+            export_path = self.exporter.export_run_summary(all_export_rows, format="xlsx")
+            logger.info("报告已导出: %s", export_path)
+
+    async def _run_crawler(self, source_name: str, crawler) -> List[dict]:
+        """运行单个爬虫"""
         export_rows = []
 
-        if isinstance(self.crawler, FeizhuCrawler):
-            try:
-                logger.info("Phase 1/2: logging in to Fliggy...")
-                await self.crawler.ensure_logged_in()
-                logger.info("Phase 1/2: Fliggy login phase finished")
-            except Exception as exc:
-                logger.warning("Fliggy login phase failed, continue querying: %s", exc)
-
-        logger.info("Phase 2/2: querying flights...")
         for route in self.config.routes:
             route_start = datetime.now()
-            source = self.crawler.source if hasattr(self.crawler, "source") else self.config.monitor.default_source
 
             try:
-                logger.info("Checking route %s -> %s", route.from_city, route.to_city)
-                flights = await self.crawler.search_flights(route)
+                logger.info("查询航线 %s -> %s", route.from_city, route.to_city)
+                flights = await crawler.search_flights(route)
             except Exception as exc:
-                logger.error("Route check failed: %s -> %s - %s", route.from_city, route.to_city, exc)
+                logger.error("查询失败: %s -> %s - %s", route.from_city, route.to_city, exc)
                 for target_date in route.dates.absolute_dates:
                     export_rows.append(
                         self._build_export_row(
@@ -129,77 +114,51 @@ class FlightMonitor:
                             route_to=route.to_city,
                             target_date=target_date,
                             threshold=route.low_price_threshold,
-                            source=source,
+                            source=source_name,
                             status="failed",
                             message=str(exc),
                         )
                     )
-                    await self.db.log_execution(
-                        job_id=f"{route.from_city}_{route.to_city}_{target_date.isoformat()}",
-                        route_from=route.from_city,
-                        route_to=route.to_city,
-                        flight_date=target_date.isoformat(),
-                        status="failed",
-                        message=str(exc),
-                        source=source,
-                    )
                 continue
 
+            # 按日期分组
             flights_by_date = {d: [] for d in route.dates.absolute_dates}
             for flight in flights:
                 flight_date = flight.get("flight_date")
                 if flight_date in flights_by_date:
                     flights_by_date[flight_date].append(flight)
 
-            channels = self._get_enabled_channels()
-            execution_time = int((datetime.now() - route_start).total_seconds() * 1000)
-
             for target_date in route.dates.absolute_dates:
-                job_id = f"{route.from_city}_{route.to_city}_{target_date.isoformat()}"
                 date_flights = flights_by_date.get(target_date, [])
 
                 if not date_flights:
-                    logger.warning("No flights found: %s -> %s (%s)", route.from_city, route.to_city, target_date)
+                    logger.warning("未找到航班: %s -> %s (%s)", route.from_city, route.to_city, target_date)
                     export_rows.append(
                         self._build_export_row(
                             route_from=route.from_city,
                             route_to=route.to_city,
                             target_date=target_date,
                             threshold=route.low_price_threshold,
-                            source=source,
+                            source=source_name,
                             status="warning",
-                            message="No flights found",
+                            message="未找到航班",
                         )
-                    )
-                    await self.db.log_execution(
-                        job_id=job_id,
-                        route_from=route.from_city,
-                        route_to=route.to_city,
-                        flight_date=target_date.isoformat(),
-                        status="warning",
-                        message="No flights found",
-                        source=source,
                     )
                     continue
 
-                sorted_date_flights = sorted(
-                    date_flights,
-                    key=lambda flight: (
-                        flight["price"],
-                        flight.get("flight_no", ""),
-                        flight.get("airline", ""),
-                    ),
-                )
-                low_price_flights = [
-                    flight for flight in sorted_date_flights if flight["price"] <= route.low_price_threshold
-                ]
-                display_flights = low_price_flights[:] or sorted_date_flights[:1]
+                # 按价格排序
+                sorted_flights = sorted(date_flights, key=lambda f: f["price"])
 
+                # 找出低价航班
+                low_price_flights = [f for f in sorted_flights if f["price"] <= route.low_price_threshold]
+
+                # 记录到导出
+                display_flights = low_price_flights[:] or sorted_flights[:1]
                 for flight in display_flights:
                     message = (
-                        "Below threshold"
+                        "低于阈值"
                         if flight["price"] <= route.low_price_threshold
-                        else "Above threshold; keeping lowest observed price"
+                        else f"高于阈值，最低价: {sorted_flights[0]['price']}"
                     )
                     export_rows.append(
                         self._build_export_row(
@@ -214,7 +173,8 @@ class FlightMonitor:
                         )
                     )
 
-                for flight in sorted_date_flights:
+                # 保存价格历史
+                for flight in sorted_flights:
                     await self.db.save_price_history(
                         route_from=flight["route_from"],
                         route_to=flight["route_to"],
@@ -225,6 +185,7 @@ class FlightMonitor:
                         source=flight["source"],
                     )
 
+                # 发送低价提醒
                 if low_price_flights:
                     await self.notifier.send_low_price_alert(
                         low_price_flights,
@@ -232,6 +193,7 @@ class FlightMonitor:
                         threshold=route.low_price_threshold,
                     )
 
+                    channels = self._get_enabled_channels()
                     for flight in low_price_flights:
                         await self.db.save_alert(
                             route_from=flight["route_from"],
@@ -244,25 +206,25 @@ class FlightMonitor:
                             channels=channels,
                             source=flight["source"],
                         )
-                    msg = f"Found {len(low_price_flights)} low-price flights"
-                else:
-                    min_price = sorted_date_flights[0]["price"]
-                    msg = f"No prices matched threshold; lowest observed price kept: {min_price}"
 
+                    logger.info("发现 %d 个低价航班", len(low_price_flights))
+                else:
+                    logger.info("未发现低于阈值的航班，最低价: %d", sorted_flights[0]["price"])
+
+                # 记录执行日志
+                execution_time = int((datetime.now() - route_start).total_seconds() * 1000)
                 await self.db.log_execution(
-                    job_id=job_id,
+                    job_id=f"{source_name}_{route.from_city}_{route.to_city}_{target_date.isoformat()}",
                     route_from=route.from_city,
                     route_to=route.to_city,
                     flight_date=target_date.isoformat(),
                     status="success",
-                    message=msg,
+                    message=f"找到 {len(sorted_flights)} 个航班",
                     execution_time_ms=execution_time,
-                    source=source,
+                    source=source_name,
                 )
 
-        if self.exporter:
-            export_path = self.exporter.export_run_summary(export_rows)
-            logger.info("Run summary exported to %s", export_path)
+        return export_rows
 
     def _get_enabled_channels(self) -> List[str]:
         channels = []
@@ -291,10 +253,6 @@ class FlightMonitor:
         if isinstance(price, int):
             is_low_price = "yes" if price <= threshold else "no"
 
-        row_message = message
-        if flight.get("metadata", {}).get("record_type") == "daily_min_price_calendar":
-            row_message = f"{message}; daily minimum price calendar"
-
         return {
             "route_from": route_from,
             "route_to": route_to,
@@ -310,30 +268,30 @@ class FlightMonitor:
             "departure_airport": flight.get("departure_airport", ""),
             "arrival_airport": flight.get("arrival_airport", ""),
             "status": status,
-            "message": row_message,
+            "message": message,
         }
 
     async def close(self) -> None:
-        logger.info("Closing monitor...")
-        if self.crawler:
-            await self.crawler.close()
+        logger.info("关闭监控...")
+        for crawler in self.crawlers.values():
+            await crawler.close()
         if self.db:
             await self.db.close()
-        logger.info("Monitor closed")
+        logger.info("监控已关闭")
 
 
 async def main() -> None:
     config_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("config.yaml")
 
     if not config_path.exists():
-        print(f"Config not found: {config_path}")
-        print("Copy config.example.yaml to config.yaml first.")
+        print(f"配置文件不存在: {config_path}")
+        print("请先复制 config.example.yaml 为 config.yaml 并修改配置")
         sys.exit(1)
 
     monitor = FlightMonitor(config_path)
 
     def signal_handler(sig, frame):
-        print("\nSignal received, shutting down...")
+        print("\n收到退出信号...")
         asyncio.create_task(monitor.close())
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -343,9 +301,9 @@ async def main() -> None:
         await monitor.init()
         await monitor.run_check()
     except KeyboardInterrupt:
-        print("\nInterrupted by user")
+        print("\n用户中断")
     except Exception as exc:
-        logger.exception("Runtime error: %s", exc)
+        logger.exception("运行错误: %s", exc)
         sys.exit(1)
     finally:
         await monitor.close()

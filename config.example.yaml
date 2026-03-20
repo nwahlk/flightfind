@@ -1,40 +1,37 @@
 # FlightFind 机票监控配置示例
+# 支持数据源: ctrip(携程), spring(春秋航空)
 
 monitor:
-  default_source: "spring"  # 数据源: "spring", "csair", "mu", "zh", "ho", "ctrip", "feizhu"
+  # 数据源列表，可选择一个或多个
+  # 单数据源示例: ["ctrip"] 或 ["spring"]
+  # 多数据源示例: ["ctrip", "spring"]
+  sources: ["ctrip"]
+
   check_interval: 30  # 检查间隔，单位：分钟
   headless: true      # true=无界面运行，false=显示浏览器窗口（调试用）
 
 routes:
   - from: "深圳"
     to: "上海"
-    low_price_threshold: 600
+    low_price_threshold: 800  # 低价阈值，低于此价格会发送通知
     dates:
       mode: "absolute"
-      absolute_dates: ["2025-04-01", "2025-04-02", "2025-04-03"]
+      absolute_dates: ["2026-03-25"]
 
   - from: "上海"
     to: "深圳"
-    low_price_threshold: 800
+    low_price_threshold: 600
     dates:
       mode: "absolute"
-      absolute_dates: ["2025-04-04", "2025-04-05", "2025-04-06"]
+      absolute_dates: ["2026-03-27"]
 
 default_dates:
   mode: "absolute"
   absolute_dates: []
 
-# 打码服务配置（用于解决滑块验证）
-captcha:
-  type: "none"  # "none" 或 "chaojiying"
-  # 超级鹰配置 (https://www.chaojiying.com)
-  chaojiying_username: ""
-  chaojiying_password: ""
-  chaojiying_soft_id: "96001"
-
 notifications:
   email:
-    enabled: true
+    enabled: false
     smtp_server: "smtp.qq.com"
     smtp_port: 465
     username: "your_email@qq.com"
@@ -42,7 +39,7 @@ notifications:
     to: ["your_email@qq.com"]
 
   webhook:
-    enabled: false
+    enabled: true
     url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxx"
 
   bark:

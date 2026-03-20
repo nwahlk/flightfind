@@ -142,18 +142,17 @@ class BarkConfig:
 class MonitorConfig:
     check_interval: int = 30
     headless: bool = True
-    default_source: str = "feizhu"
-    feizhu_username: str = ""
-    feizhu_password: str = ""
+    sources: List[str] = field(default_factory=lambda: ["ctrip"])
 
     @classmethod
     def from_dict(cls, data: dict) -> "MonitorConfig":
+        sources = data.get("sources", ["ctrip"])
+        if isinstance(sources, str):
+            sources = [s.strip() for s in sources.split(",")]
         return cls(
             check_interval=data.get("check_interval", 30),
             headless=data.get("headless", True),
-            default_source=data.get("default_source", "feizhu"),
-            feizhu_username=data.get("feizhu_username", ""),
-            feizhu_password=data.get("feizhu_password", ""),
+            sources=sources,
         )
 
 
@@ -181,6 +180,9 @@ class NotificationsConfig:
     email: EmailConfig
     webhook: WebhookConfig
     bark: BarkConfig
+    # 时间段过滤（只通知指定时间段的航班）
+    time_filter_start: str = ""  # 如 "12:00"
+    time_filter_end: str = ""    # 如 "18:00"
 
     @classmethod
     def from_dict(cls, data: dict) -> "NotificationsConfig":
@@ -188,6 +190,8 @@ class NotificationsConfig:
             email=EmailConfig.from_dict(data.get("email", {})),
             webhook=WebhookConfig.from_dict(data.get("webhook", {})),
             bark=BarkConfig.from_dict(data.get("bark", {})),
+            time_filter_start=data.get("time_filter_start", ""),
+            time_filter_end=data.get("time_filter_end", ""),
         )
 
 
@@ -234,12 +238,13 @@ def load_config(config_path: Union[str, Path]) -> AppConfig:
 
 
 def _validate_config(config: AppConfig) -> None:
-    valid_sources = {"csair", "ctrip", "feizhu", "spring", "mu", "zh", "ho"}
-    if config.monitor.default_source not in valid_sources:
-        raise ConfigError(
-            f"default_source must be one of {sorted(valid_sources)}, "
-            f"got: {config.monitor.default_source}"
-        )
+    valid_sources = {"ctrip", "spring"}
+    for source in config.monitor.sources:
+        if source not in valid_sources:
+            raise ConfigError(
+                f"sources must be one of {sorted(valid_sources)}, "
+                f"got: {source}"
+            )
 
     if not config.routes:
         raise ConfigError("At least one route must be configured")

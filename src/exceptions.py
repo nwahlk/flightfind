@@ -1,58 +1,45 @@
-"""
-FlightFind 异常定义
-"""
+"""Project exception types."""
 
 
 class FlightFindError(Exception):
-    """基础异常"""
-    pass
+    """Base exception for the project."""
 
 
 class ConfigError(FlightFindError):
-    """配置错误"""
-    pass
+    """Configuration error."""
 
 
 class DatabaseError(FlightFindError):
-    """数据库错误"""
-    pass
+    """Database error."""
 
 
 class CrawlerError(FlightFindError):
-    """爬虫错误"""
-    pass
+    """Crawler error."""
 
 
 class BrowserCrashError(CrawlerError):
-    """浏览器崩溃错误"""
-    pass
+    """Browser startup or runtime error."""
 
 
 class NetworkError(CrawlerError):
-    """网络错误"""
-    pass
+    """Network request error."""
 
 
 class TimeoutError(CrawlerError):
-    """超时错误"""
-    pass
+    """Timeout error."""
 
 
 class ParseError(CrawlerError):
-    """解析错误"""
-    pass
+    """Response parsing error."""
 
 
 class AntiBotError(CrawlerError):
-    """反爬检测"""
-    pass
+    """Anti-bot or risk-control error."""
 
 
 class NotifierError(FlightFindError):
-    """通知错误"""
-    pass
+    """Notification sending error."""
 
 
 class RetryExhaustedError(FlightFindError):
-    """重试耗尽"""
-    pass
+    """Retry attempts exhausted."""

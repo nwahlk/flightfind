@@ -1,0 +1,3 @@
+﻿route_from,route_to,flight_date,flight_no,airline,price,threshold,is_low_price,source,departure_time,arrival_time,departure_airport,arrival_airport,status,message
+深圳,上海,2026-04-03,,,,800,,csair,,,,,failed,csair query is cooling down after risk-control detection
+上海,深圳,2026-04-05,,,,600,,csair,,,,,failed,csair query is cooling down after risk-control detection

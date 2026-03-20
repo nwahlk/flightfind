@@ -1,0 +1,504 @@
+"""
+Spring Airlines official-site crawler.
+"""
+
+import asyncio
+import json
+import logging
+import random
+import re
+import time
+from datetime import date
+from pathlib import Path
+from typing import Any, Dict, List
+from urllib.parse import urlencode
+
+from playwright.async_api import ElementHandle, Page, async_playwright
+
+from src.base_crawler import FlightCrawler
+from src.config import Route
+from src.exceptions import BrowserCrashError, CrawlerError, ParseError
+from src.flight_record import normalize_flight_record
+from src.utils import retry_with_backoff
+
+logger = logging.getLogger(__name__)
+
+
+SPRING_CITY_CODE_MAP = {
+    "\u5317\u4eac": "BJS",
+    "\u4e0a\u6d77": "SHA",
+    "\u5e7f\u5dde": "CAN",
+    "\u6df1\u5733": "SZX",
+    "\u6210\u90fd": "CTU",
+    "\u676d\u5dde": "HGH",
+    "\u897f\u5b89": "XIY",
+    "\u91cd\u5e86": "CKG",
+    "\u5357\u4eac": "NKG",
+    "\u6b66\u6c49": "WUH",
+    "\u5929\u6d25": "TSN",
+    "\u9752\u5c9b": "TAO",
+    "\u5927\u8fde": "DLC",
+    "\u53a6\u95e8": "XMN",
+    "\u6606\u660e": "KMG",
+    "\u957f\u6c99": "CSX",
+    "\u90d1\u5dde": "CGO",
+    "\u6c88\u9633": "SHE",
+    "\u6d4e\u5357": "TNA",
+    "\u54c8\u5c14\u6ee8": "HRB",
+    "\u4e09\u4e9a": "SYX",
+    "\u6d77\u53e3": "HAK",
+    "\u798f\u5dde": "FOC",
+    "\u5357\u5b81": "NNG",
+}
+
+SPRING_AIRLINE_NAME = "\u6625\u79cb\u822a\u7a7a"
+
+
+def get_spring_city_code(city_name: str) -> str:
+    return SPRING_CITY_CODE_MAP.get(city_name, city_name)
+
+
+class SpringCrawler(FlightCrawler):
+    source = "spring"
+
+    def __init__(self, headless: bool = True):
+        super().__init__(headless=headless)
+        self.playwright = None
+        self.debug_path = Path("logs")
+        self.debug_path.mkdir(parents=True, exist_ok=True)
+        self._session_warmed = False
+        self._list_cooldown_until = 0.0
+
+    @retry_with_backoff(max_attempts=3, base_delay=2.0)
+    async def init(self) -> None:
+        try:
+            self.playwright = await async_playwright().start()
+            self.browser = await self.playwright.chromium.launch(
+                headless=self.headless,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            )
+            self.context = await self.browser.new_context(
+                viewport={"width": 1440, "height": 900},
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                extra_http_headers={
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                    "Referer": "https://flights.ch.com/",
+                },
+            )
+            await self.context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+            )
+        except Exception as exc:
+            raise BrowserCrashError(f"spring browser init failed: {exc}") from exc
+
+    @retry_with_backoff(max_attempts=3, base_delay=4.0)
+    async def search_flights(self, route: Route) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        for index, flight_date in enumerate(sorted(route.dates.absolute_dates)):
+            if index:
+                await self._human_pause(8.0, 14.0)
+            try:
+                if self._should_skip_list_page():
+                    logger.info(
+                        "[spring] list page is cooling down, use calendar fallback for %s %s -> %s",
+                        flight_date,
+                        route.from_city,
+                        route.to_city,
+                    )
+                    results.extend(await self._search_calendar_fallback(route, flight_date))
+                    continue
+
+                list_results = await self._search_single_date(route, flight_date)
+                results.extend(list_results)
+            except Exception as exc:
+                logger.warning(
+                    "[spring] list page failed for %s %s -> %s, fallback to calendar: %s",
+                    flight_date,
+                    route.from_city,
+                    route.to_city,
+                    exc,
+                )
+                results.extend(await self._search_calendar_fallback(route, flight_date))
+        return results
+
+    async def _search_single_date(
+        self,
+        route: Route,
+        flight_date: date,
+    ) -> List[Dict[str, Any]]:
+        if not self.context:
+            raise CrawlerError("spring browser context is not initialized")
+
+        await self._warm_session()
+        page = await self.context.new_page()
+        url = self._build_list_url(route.from_city, route.to_city, flight_date)
+
+        try:
+            await self._human_pause(1.5, 3.5)
+            response = await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(random.randint(10000, 14000))
+            if response and response.status in (403, 429):
+                if response.status == 429:
+                    self._activate_list_cooldown()
+                raise CrawlerError(f"spring list page returned HTTP {response.status}")
+            if await self._is_rate_limited(page):
+                self._activate_list_cooldown()
+                raise CrawlerError("spring list page was rate limited")
+        except Exception as exc:
+            await self._save_debug_snapshot(page, route, flight_date, "list_error")
+            await page.close()
+            raise CrawlerError(f"spring list page load failed: {exc}") from exc
+
+        flights = await self._parse_list_page(page, route, flight_date)
+        await self._save_debug_snapshot(page, route, flight_date, "list_page")
+        await page.close()
+        if not flights:
+            raise ParseError("spring list page did not yield any flights")
+        return flights
+
+    async def _search_calendar_fallback(self, route: Route, flight_date: date) -> List[Dict[str, Any]]:
+        if not self.context:
+            raise CrawlerError("spring browser context is not initialized")
+
+        page = await self.context.new_page()
+        collected: List[Dict[str, Any]] = []
+        response_tasks: List[asyncio.Task] = []
+
+        async def capture_response(response) -> None:
+            if "Flights/MinPriceTrends" not in response.url or response.status != 200:
+                return
+            try:
+                payload = json.loads(await response.text())
+            except Exception:
+                return
+            trends = payload.get("PriceTrends") or []
+            if payload.get("Code") == "0" and trends:
+                collected.append(payload)
+
+        page.on(
+            "response",
+            lambda response: response_tasks.append(asyncio.create_task(capture_response(response))),
+        )
+
+        url = self._build_calendar_url(route.from_city, route.to_city, flight_date)
+
+        try:
+            await self._human_pause(2.0, 4.0)
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(random.randint(8000, 11000))
+            if response_tasks:
+                await asyncio.gather(*response_tasks, return_exceptions=True)
+        except Exception as exc:
+            await self._save_debug_snapshot(page, route, flight_date, "calendar_error")
+            await page.close()
+            raise CrawlerError(f"spring calendar page load failed: {exc}") from exc
+
+        await self._save_debug_snapshot(page, route, flight_date, "calendar_page")
+        await page.close()
+
+        price_by_date: Dict[str, int] = {}
+        for payload in collected:
+            for item in payload.get("PriceTrends", []):
+                flight_date_str = item.get("Date")
+                price = item.get("Price")
+                if not flight_date_str or price is None:
+                    continue
+                previous = price_by_date.get(flight_date_str)
+                current = int(price)
+                price_by_date[flight_date_str] = current if previous is None else min(previous, current)
+
+        if not price_by_date:
+            raise ParseError("spring returned no usable price trend data")
+
+        results: List[Dict[str, Any]] = []
+        key = flight_date.isoformat()
+        if key in price_by_date:
+            results.append(
+                normalize_flight_record(
+                    route_from=route.from_city,
+                    route_to=route.to_city,
+                    flight_date=flight_date,
+                    flight_no="",
+                    airline=SPRING_AIRLINE_NAME,
+                    price=price_by_date[key],
+                    source=self.source,
+                    metadata={"record_type": "daily_min_price_calendar"},
+                    allow_empty_flight_no=True,
+                )
+            )
+        return results
+
+    def _build_list_url(self, from_city: str, to_city: str, flight_date: date) -> str:
+        from_code = get_spring_city_code(from_city)
+        to_code = get_spring_city_code(to_city)
+        query = urlencode(
+            {
+                "Departure": from_city,
+                "Arrival": to_city,
+                "FDate": flight_date.isoformat(),
+                "DepartCityCode": from_code,
+                "ArriveCityCode": to_code,
+            }
+        )
+        return f"https://flights.ch.com/{from_code}-{to_code}.html?{query}"
+
+    def _build_calendar_url(self, from_city: str, to_city: str, flight_date: date) -> str:
+        from_code = get_spring_city_code(from_city)
+        to_code = get_spring_city_code(to_city)
+        return f"https://flights.ch.com/{from_code}-{to_code}/?FDate={flight_date.isoformat()}"
+
+    async def _human_pause(self, min_seconds: float, max_seconds: float) -> None:
+        await asyncio.sleep(random.uniform(min_seconds, max_seconds))
+
+    async def _warm_session(self) -> None:
+        if self._session_warmed or not self.context:
+            return
+
+        page = await self.context.new_page()
+        try:
+            await page.goto("https://flights.ch.com/", wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(random.randint(3000, 6000))
+            self._session_warmed = True
+        except Exception as exc:
+            logger.info("[spring] warm-up page skipped: %s", exc)
+        finally:
+            await page.close()
+
+    def _activate_list_cooldown(self, cooldown_seconds: int = 1800) -> None:
+        self._list_cooldown_until = time.monotonic() + cooldown_seconds
+
+    def _should_skip_list_page(self) -> bool:
+        return time.monotonic() < self._list_cooldown_until
+
+    async def _is_rate_limited(self, page: Page) -> bool:
+        try:
+            title = await page.title()
+            body = await page.locator("body").inner_text()
+        except Exception:
+            return False
+        signals = ["Too Many Requests", "429", "访问过于频繁", "请求过于频繁"]
+        haystack = f"{title}\n{body}"
+        return any(signal in haystack for signal in signals)
+
+    async def _parse_list_page(self, page: Page, route: Route, flight_date: date) -> List[Dict[str, Any]]:
+        selectors = [
+            ".flight-item-new",
+            ".flight-list .flight-item-new",
+            ".flight-list.zh-cn .flight-item-new",
+            ".flight-list-item",
+            ".journey-item",
+            ".flight-item",
+            "[class*='flight-item']",
+            "[class*='journey-item']",
+            "[class*='list-item']",
+        ]
+        items: List[ElementHandle] = []
+        for selector in selectors:
+            try:
+                items = await page.query_selector_all(selector)
+            except Exception:
+                items = []
+            if items:
+                logger.info("[spring] found %s candidate nodes via %s", len(items), selector)
+                break
+
+        flights: List[Dict[str, Any]] = []
+        seen = set()
+        for item in items:
+            flight = await self._parse_single_list_item(item, route, flight_date)
+            if not flight:
+                continue
+            dedupe_key = (flight["flight_no"], flight["price"], flight["route_from"], flight["route_to"])
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            flights.append(flight)
+        return flights
+
+    async def _parse_single_list_item(
+        self,
+        item: ElementHandle,
+        route: Route,
+        flight_date: date,
+    ) -> Dict[str, Any] | None:
+        try:
+            raw_text = (await item.inner_text()).strip()
+            if not raw_text:
+                return None
+
+            flight_no = (await item.get_attribute("data-shizhu-flightno") or "").strip().upper()
+            if not flight_no:
+                flight_no_text = await self._get_text(
+                    item,
+                    [
+                        ".f-c-name",
+                        "[data-flight-no]",
+                        ".flight-no",
+                        "[class*='flight-no']",
+                        "[class*='flightNo']",
+                        ".journey-no",
+                    ],
+                )
+                flight_match = re.search(r"\b([A-Z0-9]{2,3}\d{3,4})\b", f"{flight_no_text} {raw_text}")
+                flight_no = flight_match.group(1) if flight_match else ""
+
+            airline_text = await self._get_text(
+                item,
+                [
+                    ".f-c-name",
+                    "[data-airline]",
+                    ".airline-name",
+                    "[class*='airline']",
+                    ".journey-airline",
+                ],
+            )
+            airline = re.sub(r"\b[A-Z0-9]{2,3}\d{3,4}\b", "", airline_text).strip() or SPRING_AIRLINE_NAME
+
+            departure_time = await self._get_text(
+                item,
+                [
+                    ".f-ori .f-time em",
+                    ".f-ori .f-time",
+                    "[class*='depart'] .time em",
+                ],
+            )
+            arrival_time = await self._get_text(
+                item,
+                [
+                    ".f-des .f-time em",
+                    ".f-des .f-time",
+                    "[class*='arrive'] .time em",
+                ],
+            )
+            departure_airport = await self._get_text(
+                item,
+                [
+                    ".f-ori .f-airport",
+                    "[class*='depart'] .airport",
+                ],
+            )
+            arrival_airport = await self._get_text(
+                item,
+                [
+                    ".f-des .f-airport",
+                    "[class*='arrive'] .airport",
+                ],
+            )
+            duration_text = await self._get_text(
+                item,
+                [
+                    ".f-during .f-time",
+                    "[class*='during'] .time",
+                ],
+            )
+            aircraft_type = await self._get_text(
+                item,
+                [
+                    ".f-a-name",
+                    "[class*='aircraft']",
+                ],
+            )
+            segment_id = (await item.get_attribute("data-shizhu-segmentid") or "").strip()
+
+            price_text = await self._get_text(
+                item,
+                [
+                    ".p-intro .price .currency",
+                    ".p-intro .price",
+                    ".price .currency",
+                    ".price",
+                    "[data-price]",
+                    "[class*='price']",
+                    "[class*='amount']",
+                    ".journey-price",
+                ],
+            )
+            price_match = re.search(r"(\d{2,5})", price_text)
+            if not price_match:
+                return None
+            price = int(price_match.group(1))
+            if price < 10:
+                return None
+
+            metadata: Dict[str, Any] = {"record_type": "flight_list_page"}
+            if duration_text:
+                metadata["duration"] = duration_text
+            if aircraft_type:
+                metadata["aircraft_type"] = aircraft_type
+            if segment_id:
+                metadata["segment_id"] = segment_id
+            if departure_time:
+                metadata["departure_time"] = departure_time
+            if arrival_time:
+                metadata["arrival_time"] = arrival_time
+
+            return normalize_flight_record(
+                route_from=route.from_city,
+                route_to=route.to_city,
+                flight_date=flight_date,
+                flight_no=flight_no,
+                airline=airline,
+                price=price,
+                source=self.source,
+                departure_airport=departure_airport,
+                arrival_airport=arrival_airport,
+                metadata=metadata,
+                allow_empty_flight_no=True,
+            )
+        except Exception:
+            return None
+
+    async def _get_text(self, item: ElementHandle, selectors: List[str]) -> str:
+        for selector in selectors:
+            try:
+                elem = await item.query_selector(selector)
+                if not elem:
+                    continue
+                text = (await elem.inner_text()).strip()
+                if text:
+                    return text
+            except Exception:
+                continue
+        return ""
+
+    async def _save_debug_snapshot(
+        self,
+        page: Page,
+        route: Route,
+        flight_date: date,
+        suffix: str,
+    ) -> None:
+        safe_name = f"spring_{route.from_city}_{route.to_city}_{flight_date.isoformat()}_{suffix}"
+        html_path = self.debug_path / f"{safe_name}.html"
+        png_path = self.debug_path / f"{safe_name}.png"
+
+        try:
+            html_path.write_text(await page.content(), encoding="utf-8")
+        except Exception:
+            pass
+
+        try:
+            await page.screenshot(path=str(png_path), full_page=True)
+        except Exception:
+            pass
+
+    async def close(self) -> None:
+        if self.context:
+            await self.context.close()
+            self.context = None
+        if self.browser:
+            await self.browser.close()
+            self.browser = None
+        if self.playwright:
+            await self.playwright.stop()
+            self.playwright = None

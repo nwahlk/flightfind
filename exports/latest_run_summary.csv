@@ -1,0 +1,9 @@
+﻿route_from,route_to,flight_date,flight_no,airline,price,threshold,is_low_price,source,departure_time,arrival_time,departure_airport,arrival_airport,status,message
+深圳,上海,2026-04-03,9C8956,春秋航空,1230,800,no,spring,07:15,09:35,宝安国际机场T3,虹桥国际机场T1,success,高于阈值时保留最近价格
+上海,深圳,2026-04-05,9C7519,春秋航空,450,600,yes,spring,09:35,12:05,虹桥国际机场T1,宝安国际机场T3,success,低于阈值
+上海,深圳,2026-04-05,9C8775,春秋航空,500,600,yes,spring,14:15,16:45,虹桥国际机场T1,宝安国际机场T3,success,低于阈值
+上海,深圳,2026-04-05,9C8881,春秋航空,500,600,yes,spring,10:40,13:10,虹桥国际机场T1,宝安国际机场T3,success,低于阈值
+上海,深圳,2026-04-05,9C8949,春秋航空,500,600,yes,spring,17:20,19:45,虹桥国际机场T1,宝安国际机场T3,success,低于阈值
+上海,深圳,2026-04-05,9C8955,春秋航空,500,600,yes,spring,21:40,"00:15
++1天",虹桥国际机场T1,宝安国际机场T3,success,低于阈值
+上海,深圳,2026-04-05,9C8917,春秋航空,510,600,yes,spring,06:40,08:55,虹桥国际机场T1,宝安国际机场T3,success,低于阈值

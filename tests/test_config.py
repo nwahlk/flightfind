@@ -1,137 +1,105 @@
-"""
-配置模块测试
-"""
+"""Tests for configuration loading and validation."""
+
+from datetime import date
+import os
+import tempfile
 
 import pytest
-from datetime import date
-from pathlib import Path
-import tempfile
-import os
 
-from src.config import (
-    AppConfig,
-    MonitorConfig,
-    Route,
-    DateConfig,
-    EmailConfig,
-    WebhookConfig,
-    BarkConfig,
-    NotificationsConfig,
-    load_config,
-    get_airport_name,
-    AIRPORT_NAMES,
-)
+from src.config import AIRPORT_NAMES, DateConfig, MonitorConfig, NotificationsConfig, Route, get_airport_name, load_config
 from src.exceptions import ConfigError
 
 
 class TestMonitorConfig:
-    """测试MonitorConfig"""
-
     def test_from_dict_with_defaults(self):
-        """测试使用默认值"""
-        data = {}
-        config = MonitorConfig.from_dict(data)
+        config = MonitorConfig.from_dict({})
         assert config.check_interval == 30
         assert config.headless is True
-
-    def test_from_dict_with_values(self):
-        """测试使用指定值"""
-        data = {
-            "check_interval": 60,
-            "headless": False
-        }
-        config = MonitorConfig.from_dict(data)
-        assert config.check_interval == 60
-        assert config.headless is False
-
-    def test_default_source_default_value(self):
-        """测试default_source默认值为feizhu"""
-        # This test will pass once we add the field
-        config = MonitorConfig()
-        assert hasattr(config, "default_source")
         assert config.default_source == "feizhu"
 
-    def test_default_source_valid_value(self):
-        """测试设置有效的default_source值"""
-        data = {
-            "default_source": "ctrip"
-        }
-        config = MonitorConfig.from_dict(data)
+    def test_from_dict_with_values(self):
+        config = MonitorConfig.from_dict(
+            {
+                "check_interval": 60,
+                "headless": False,
+                "default_source": "ctrip",
+            }
+        )
+        assert config.check_interval == 60
+        assert config.headless is False
         assert config.default_source == "ctrip"
 
 
 class TestDateConfig:
-    """测试DateConfig"""
-
     def test_from_dict_absolute_mode(self):
-        """测试绝对日期模式"""
-        data = {
-            "mode": "absolute",
-            "absolute_dates": ["2024-01-01", "2024-01-02"]
-        }
-        config = DateConfig.from_dict(data)
+        config = DateConfig.from_dict(
+            {
+                "mode": "absolute",
+                "absolute_dates": ["2024-01-01", "2024-01-02"],
+            }
+        )
         assert config.mode == "absolute"
         assert config.absolute_dates == [date(2024, 1, 1), date(2024, 1, 2)]
 
     def test_from_dict_relative_mode(self):
-        """测试相对日期模式"""
-        data = {
-            "mode": "relative",
-            "relative_days": [1, 2, 3]
-        }
-        config = DateConfig.from_dict(data)
+        config = DateConfig.from_dict(
+            {
+                "mode": "relative",
+                "relative_days": [1, 2, 3],
+            }
+        )
         assert config.mode == "relative"
         assert config.relative_days == [1, 2, 3]
 
 
 class TestRoute:
-    """测试Route"""
-
     def test_from_dict(self):
-        """测试从字典创建Route"""
-        data = {
-            "from": "北京",
-            "to": "上海",
-            "low_price_threshold": 500,
-            "dates": {
-                "mode": "absolute",
-                "absolute_dates": ["2024-01-01"]
+        route = Route.from_dict(
+            {
+                "from": "北京",
+                "to": "上海",
+                "low_price_threshold": 500,
+                "dates": {
+                    "mode": "absolute",
+                    "absolute_dates": ["2024-01-01"],
+                },
             }
-        }
-        route = Route.from_dict(data)
+        )
         assert route.from_city == "北京"
         assert route.to_city == "上海"
         assert route.low_price_threshold == 500
 
 
 class TestNotificationsConfig:
-    """测试NotificationsConfig"""
-
     def test_from_dict(self):
-        """测试从字典创建NotificationsConfig"""
-        data = {
-            "email": {
-                "enabled": True,
-                "smtp_server": "smtp.example.com",
-                "smtp_port": 465,
-                "username": "test@example.com",
-                "password": "password",
-                "to": ["user@example.com"]
-            },
-            "webhook": {"enabled": False},
-            "bark": {"enabled": False}
-        }
-        config = NotificationsConfig.from_dict(data)
+        config = NotificationsConfig.from_dict(
+            {
+                "email": {
+                    "enabled": True,
+                    "smtp_server": "smtp.example.com",
+                    "smtp_port": 465,
+                    "username": "test@example.com",
+                    "password": "password",
+                    "to": ["user@example.com"],
+                },
+                "webhook": {"enabled": False},
+                "bark": {"enabled": False},
+            }
+        )
         assert config.email.enabled is True
         assert config.email.smtp_server == "smtp.example.com"
 
 
-class TestLoadConfig:
-    """测试load_config函数"""
+def _write_temp_config(config_data: str) -> str:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False, encoding="utf-8") as handle:
+        handle.write(config_data)
+        return handle.name
 
+
+class TestLoadConfig:
     def test_load_valid_config(self):
-        """测试加载有效的配置文件"""
-        config_data = """
+        temp_path = _write_temp_config(
+            """
 monitor:
   check_interval: 30
   headless: true
@@ -164,10 +132,7 @@ notifications:
   bark:
     enabled: false
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8') as f:
-            f.write(config_data)
-            temp_path = f.name
-
+        )
         try:
             config = load_config(temp_path)
             assert config.monitor.check_interval == 30
@@ -180,8 +145,8 @@ notifications:
             os.unlink(temp_path)
 
     def test_load_config_with_ctrip_source(self):
-        """测试加载配置时指定ctrip作为默认数据源"""
-        config_data = """
+        temp_path = _write_temp_config(
+            """
 monitor:
   check_interval: 30
   headless: true
@@ -214,10 +179,7 @@ notifications:
   bark:
     enabled: false
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8') as f:
-            f.write(config_data)
-            temp_path = f.name
-
+        )
         try:
             config = load_config(temp_path)
             assert config.monitor.default_source == "ctrip"
@@ -225,14 +187,12 @@ notifications:
             os.unlink(temp_path)
 
     def test_load_config_missing_file(self):
-        """测试加载不存在的配置文件"""
-        with pytest.raises(ConfigError) as exc_info:
+        with pytest.raises(ConfigError, match="Config file not found"):
             load_config("/nonexistent/path/config.yaml")
-        assert "配置文件不存在" in str(exc_info.value)
 
     def test_load_config_no_default_source_uses_feizhu(self):
-        """测试配置文件中未指定default_source时使用默认值feizhu"""
-        config_data = """
+        temp_path = _write_temp_config(
+            """
 monitor:
   check_interval: 30
   headless: true
@@ -264,10 +224,7 @@ notifications:
   bark:
     enabled: false
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8') as f:
-            f.write(config_data)
-            temp_path = f.name
-
+        )
         try:
             config = load_config(temp_path)
             assert config.monitor.default_source == "feizhu"
@@ -276,11 +233,9 @@ notifications:
 
 
 class TestConfigValidation:
-    """测试配置验证"""
-
     def test_validate_invalid_default_source(self):
-        """测试验证无效的default_source值"""
-        config_data = """
+        temp_path = _write_temp_config(
+            """
 monitor:
   check_interval: 30
   headless: true
@@ -313,22 +268,20 @@ notifications:
   bark:
     enabled: false
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8') as f:
-            f.write(config_data)
-            temp_path = f.name
-
+        )
         try:
             with pytest.raises(ConfigError) as exc_info:
                 load_config(temp_path)
-            assert "default_source" in str(exc_info.value)
-            assert "ctrip" in str(exc_info.value)
-            assert "feizhu" in str(exc_info.value)
+            message = str(exc_info.value)
+            assert "default_source must be one of" in message
+            assert "ctrip" in message
+            assert "feizhu" in message
         finally:
             os.unlink(temp_path)
 
     def test_validate_no_routes(self):
-        """测试验证没有配置航线"""
-        config_data = """
+        temp_path = _write_temp_config(
+            """
 monitor:
   check_interval: 30
   headless: true
@@ -353,20 +306,16 @@ notifications:
   bark:
     enabled: false
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8') as f:
-            f.write(config_data)
-            temp_path = f.name
-
+        )
         try:
-            with pytest.raises(ConfigError) as exc_info:
+            with pytest.raises(ConfigError, match="At least one route must be configured"):
                 load_config(temp_path)
-            assert "至少配置一条航线" in str(exc_info.value)
         finally:
             os.unlink(temp_path)
 
     def test_validate_invalid_route_threshold(self):
-        """测试验证航线价格阈值小于等于0"""
-        config_data = """
+        temp_path = _write_temp_config(
+            """
 monitor:
   check_interval: 30
   headless: true
@@ -398,20 +347,16 @@ notifications:
   bark:
     enabled: false
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8') as f:
-            f.write(config_data)
-            temp_path = f.name
-
+        )
         try:
-            with pytest.raises(ConfigError) as exc_info:
+            with pytest.raises(ConfigError, match="low_price_threshold must be greater than 0"):
                 load_config(temp_path)
-            assert "价格阈值必须大于0" in str(exc_info.value)
         finally:
             os.unlink(temp_path)
 
     def test_validate_no_notification(self):
-        """测试验证没有启用任何通知渠道"""
-        config_data = """
+        temp_path = _write_temp_config(
+            """
 monitor:
   check_interval: 30
   headless: true
@@ -437,41 +382,30 @@ notifications:
   bark:
     enabled: false
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8') as f:
-            f.write(config_data)
-            temp_path = f.name
-
+        )
         try:
-            with pytest.raises(ConfigError) as exc_info:
+            with pytest.raises(ConfigError, match="At least one notification channel must be enabled"):
                 load_config(temp_path)
-            assert "至少启用一个通知渠道" in str(exc_info.value)
         finally:
             os.unlink(temp_path)
 
 
 class TestAirportNames:
-    """测试机场名称映射"""
-
     def test_get_airport_name_known_code(self):
-        """测试获取已知机场代码的名称"""
-        assert get_airport_name("PEK") == "北京首都"
-        assert get_airport_name("PVG") == "浦东"
-        assert get_airport_name("CAN") == "白云"
+        assert get_airport_name("PEK") == "Beijing Capital"
+        assert get_airport_name("PVG") == "Shanghai Pudong"
+        assert get_airport_name("CAN") == "Guangzhou Baiyun"
 
     def test_get_airport_name_unknown_code(self):
-        """测试获取未知机场代码时返回代码本身"""
-        unknown_code = "XYZ"
-        assert get_airport_name(unknown_code) == unknown_code
+        assert get_airport_name("XYZ") == "XYZ"
 
     def test_get_airport_name_empty_string(self):
-        """测试空字符串返回空字符串"""
         assert get_airport_name("") == ""
 
     def test_airport_names_constant(self):
-        """测试AIRPORT_NAMES常量包含预期的机场"""
         assert "PEK" in AIRPORT_NAMES
         assert "PVG" in AIRPORT_NAMES
         assert "CAN" in AIRPORT_NAMES
-        assert AIRPORT_NAMES["PEK"] == "北京首都"
-        assert AIRPORT_NAMES["PVG"] == "浦东"
-        assert AIRPORT_NAMES["CAN"] == "白云"
+        assert AIRPORT_NAMES["PEK"] == "Beijing Capital"
+        assert AIRPORT_NAMES["PVG"] == "Shanghai Pudong"
+        assert AIRPORT_NAMES["CAN"] == "Guangzhou Baiyun"

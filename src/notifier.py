@@ -51,14 +51,16 @@ class Notifier:
         # 按价格排序
         sorted_flights = sorted(new_flights, key=lambda x: x["price"])
 
-        # 按时间段过滤
+        # 按时间段过滤（严格模式：过滤后为空则不发送通知）
         time_start = getattr(self.config, 'time_filter_start', None)
         time_end = getattr(self.config, 'time_filter_end', None)
         if time_start and time_end:
             filtered_flights = self._filter_by_time(sorted_flights, time_start, time_end)
-            if filtered_flights:
-                sorted_flights = filtered_flights
-            # 如果过滤后为空，仍然发送原始列表（避免漏掉重要信息）
+            if not filtered_flights:
+                # 时间段内没有符合条件的航班，不发送通知
+                logger.info("No flights found in time range %s-%s, skipping notification", time_start, time_end)
+                return
+            sorted_flights = filtered_flights
 
         # 取前N个
         display_flights = sorted_flights[:MAX_FLIGHTS_IN_ALERT]
@@ -85,18 +87,25 @@ class Notifier:
         time_start: str,
         time_end: str,
     ) -> List[Dict[str, Any]]:
-        """按起飞时间段过滤航班"""
+        """按起飞时间段过滤航班（支持小时:分钟格式）"""
         try:
-            start_hour = int(time_start.split(':')[0])
-            end_hour = int(time_end.split(':')[0])
+            # 将时间字符串转换为分钟数，方便比较
+            start_parts = time_start.split(':')
+            start_minutes = int(start_parts[0]) * 60 + (int(start_parts[1]) if len(start_parts) > 1 else 0)
+
+            end_parts = time_end.split(':')
+            end_minutes = int(end_parts[0]) * 60 + (int(end_parts[1]) if len(end_parts) > 1 else 0)
 
             filtered = []
             for flight in flights:
                 dep_time = flight.get("metadata", {}).get("departure_time", "")
                 if dep_time:
                     try:
-                        hour = int(dep_time.split(':')[0])
-                        if start_hour <= hour < end_hour:
+                        dep_parts = dep_time.split(':')
+                        dep_minutes = int(dep_parts[0]) * 60 + (int(dep_parts[1]) if len(dep_parts) > 1 else 0)
+
+                        # 左闭右开区间：[start, end)
+                        if start_minutes <= dep_minutes < end_minutes:
                             filtered.append(flight)
                     except (ValueError, IndexError):
                         continue

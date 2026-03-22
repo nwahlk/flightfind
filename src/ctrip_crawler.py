@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 from playwright.async_api import ElementHandle, Page, async_playwright
 
 from src.base_crawler import FlightCrawler
+from src.city_codes import COMMON_CITY_CODE_MAP
 from src.config import Route
 from src.exceptions import BrowserCrashError, CrawlerError, ParseError
 from src.flight_record import normalize_flight_record
@@ -22,33 +23,8 @@ from src.utils import retry_with_backoff
 logger = logging.getLogger(__name__)
 
 
-# 携程城市代码映射（IATA 代码）
-CTRIP_CITY_CODE_MAP = {
-    "北京": "BJS",
-    "上海": "SHA",
-    "广州": "CAN",
-    "深圳": "SZX",
-    "成都": "CTU",
-    "杭州": "HGH",
-    "西安": "XIY",
-    "重庆": "CKG",
-    "南京": "NKG",
-    "武汉": "WUH",
-    "天津": "TSN",
-    "青岛": "TAO",
-    "大连": "DLC",
-    "厦门": "XMN",
-    "昆明": "KMG",
-    "长沙": "CSX",
-    "郑州": "CGO",
-    "沈阳": "SHE",
-    "济南": "TNA",
-    "哈尔滨": "HRB",
-    "三亚": "SYX",
-    "海口": "HAK",
-    "福州": "FOC",
-    "南宁": "NNG",
-}
+# 携程城市代码映射（使用共享映射）
+CTRIP_CITY_CODE_MAP = COMMON_CITY_CODE_MAP
 
 
 def get_ctrip_city_code(city_name: str) -> str:
@@ -242,7 +218,7 @@ class CtripCrawler(FlightCrawler):
 
         # 使用 JavaScript 直接从渲染后的 DOM 中提取航班数据
         # 携程使用 React 渲染，需要从 DOM 元素和属性中提取
-        flight_data = await page.evaluate('''() => {
+        flight_data = await page.evaluate(r'''() => {
             const results = [];
             const debugInfo = { prices: [], times: [], flightNos: [], rawHtml: [] };
 
@@ -259,7 +235,7 @@ class CtripCrawler(FlightCrawler):
                 const dataAttrs = el.dataset || {};
 
                 // 查找航班号（可能在 aria-label 或其他属性中）
-                const flightNoMatch = (ariaLabel + ' ' + title).match(/[A-Z]{2}\\d{3,4}/);
+                const flightNoMatch = (ariaLabel + ' ' + title).match(/[A-Z]{2}\d{3,4}/);
                 if (flightNoMatch) {
                     debugInfo.flightNos.push({
                         flightNo: flightNoMatch[0],
@@ -269,19 +245,19 @@ class CtripCrawler(FlightCrawler):
                 }
 
                 // 收集价格信息
-                if (/¥|￥/.test(text) && /\\d{3,4}/.test(text) && text.length < 50) {
+                if (/¥|￥/.test(text) && /\d{3,4}/.test(text) && text.length < 50) {
                     debugInfo.prices.push(text.trim());
                 }
 
                 // 收集时间信息
-                if (/\\d{2}:\\d{2}/.test(text) && text.length < 30) {
+                if (/\d{2}:\d{2}/.test(text) && text.length < 30) {
                     debugInfo.times.push(text.trim());
                 }
             }
 
             // 方法2: 从页面 HTML 中提取航班号
             const html = document.body.innerHTML;
-            const flightNoInHtml = html.match(/[A-Z]{2}\\d{3,4}/g) || [];
+            const flightNoInHtml = html.match(/[A-Z]{2}\d{3,4}/g) || [];
             debugInfo.flightNosFromHtml = [...new Set(flightNoInHtml)].slice(0, 20);
 
             // 方法3: 查找航班卡片容器
@@ -344,18 +320,13 @@ class CtripCrawler(FlightCrawler):
         flights: List[Dict[str, Any]] = []
         seen = set()
 
-        # 使用从 HTML 中提取的航班号和价格
         if flight_nos_html and prices:
-            # 提取价格数字
             price_values = []
             for p in prices:
-                # 从价格字符串中提取数字
-                import re as re_module
-                matches = re_module.findall(r'(\d{3,4})', p)
+                matches = re.findall(r'(\d{3,4})', p)
                 for m in matches:
                     price_values.append(int(m))
 
-            # 去重并排序价格
             unique_prices = sorted(set(price_values))
             logger.info("[ctrip] extracted %d unique prices: %s", len(unique_prices), unique_prices[:10])
 
@@ -519,34 +490,3 @@ class CtripCrawler(FlightCrawler):
             "RY": "江西航空",
         }
         return airline_map.get(prefix, prefix)
-
-    async def _save_debug_snapshot(
-        self, page: Page, route: Route, flight_date: date, suffix: str
-    ) -> None:
-        """保存调试快照"""
-        safe_name = f"ctrip_{route.from_city}_{route.to_city}_{flight_date.isoformat()}_{suffix}"
-        html_path = self.debug_path / f"{safe_name}.html"
-        png_path = self.debug_path / f"{safe_name}.png"
-
-        try:
-            html_path.write_text(await page.content(), encoding="utf-8")
-        except Exception:
-            pass
-
-        try:
-            await page.screenshot(path=str(png_path), full_page=True)
-        except Exception:
-            pass
-
-    async def close(self) -> None:
-        """关闭浏览器资源"""
-        await self._save_cookies_from_context()
-        if self.context:
-            await self.context.close()
-            self.context = None
-        if self.browser:
-            await self.browser.close()
-            self.browser = None
-        if self.playwright:
-            await self.playwright.stop()
-            self.playwright = None

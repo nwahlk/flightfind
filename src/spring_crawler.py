@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 from playwright.async_api import ElementHandle, Page, async_playwright
 
 from src.base_crawler import FlightCrawler
+from src.city_codes import COMMON_CITY_CODE_MAP
 from src.config import Route
 from src.exceptions import BrowserCrashError, CrawlerError, ParseError
 from src.flight_record import normalize_flight_record
@@ -24,34 +25,10 @@ from src.utils import retry_with_backoff
 logger = logging.getLogger(__name__)
 
 
-SPRING_CITY_CODE_MAP = {
-    "\u5317\u4eac": "BJS",
-    "\u4e0a\u6d77": "SHA",
-    "\u5e7f\u5dde": "CAN",
-    "\u6df1\u5733": "SZX",
-    "\u6210\u90fd": "CTU",
-    "\u676d\u5dde": "HGH",
-    "\u897f\u5b89": "XIY",
-    "\u91cd\u5e86": "CKG",
-    "\u5357\u4eac": "NKG",
-    "\u6b66\u6c49": "WUH",
-    "\u5929\u6d25": "TSN",
-    "\u9752\u5c9b": "TAO",
-    "\u5927\u8fde": "DLC",
-    "\u53a6\u95e8": "XMN",
-    "\u6606\u660e": "KMG",
-    "\u957f\u6c99": "CSX",
-    "\u90d1\u5dde": "CGO",
-    "\u6c88\u9633": "SHE",
-    "\u6d4e\u5357": "TNA",
-    "\u54c8\u5c14\u6ee8": "HRB",
-    "\u4e09\u4e9a": "SYX",
-    "\u6d77\u53e3": "HAK",
-    "\u798f\u5dde": "FOC",
-    "\u5357\u5b81": "NNG",
-}
+# 春秋航空城市代码映射（使用共享映射）
+SPRING_CITY_CODE_MAP = COMMON_CITY_CODE_MAP
 
-SPRING_AIRLINE_NAME = "\u6625\u79cb\u822a\u7a7a"
+SPRING_AIRLINE_NAME = "春秋航空"
 
 
 def get_spring_city_code(city_name: str) -> str:
@@ -473,35 +450,3 @@ class SpringCrawler(FlightCrawler):
             except Exception:
                 continue
         return ""
-
-    async def _save_debug_snapshot(
-        self,
-        page: Page,
-        route: Route,
-        flight_date: date,
-        suffix: str,
-    ) -> None:
-        safe_name = f"spring_{route.from_city}_{route.to_city}_{flight_date.isoformat()}_{suffix}"
-        html_path = self.debug_path / f"{safe_name}.html"
-        png_path = self.debug_path / f"{safe_name}.png"
-
-        try:
-            html_path.write_text(await page.content(), encoding="utf-8")
-        except Exception:
-            pass
-
-        try:
-            await page.screenshot(path=str(png_path), full_page=True)
-        except Exception:
-            pass
-
-    async def close(self) -> None:
-        if self.context:
-            await self.context.close()
-            self.context = None
-        if self.browser:
-            await self.browser.close()
-            self.browser = None
-        if self.playwright:
-            await self.playwright.stop()
-            self.playwright = None

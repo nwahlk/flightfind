@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 from playwright.async_api import Page, async_playwright
 
 from src.base_crawler import FlightCrawler
+from src.city_codes import COMMON_CITY_CODE_MAP
 from src.config import Route
 from src.exceptions import BrowserCrashError, CrawlerError, ParseError
 from src.flight_record import normalize_flight_record
@@ -24,57 +25,8 @@ from src.utils import retry_with_backoff
 logger = logging.getLogger(__name__)
 
 
-# 深圳航空城市代码映射
-SHENZHEN_CITY_CODE_MAP = {
-    "北京": "BJS",
-    "上海": "SHA",
-    "广州": "CAN",
-    "深圳": "SZX",
-    "成都": "CTU",
-    "杭州": "HGH",
-    "西安": "XIY",
-    "重庆": "CKG",
-    "南京": "NKG",
-    "武汉": "WUH",
-    "天津": "TSN",
-    "青岛": "TAO",
-    "大连": "DLC",
-    "厦门": "XMN",
-    "昆明": "KMG",
-    "长沙": "CSX",
-    "郑州": "CGO",
-    "沈阳": "SHE",
-    "济南": "TNA",
-    "哈尔滨": "HRB",
-    "三亚": "SYX",
-    "海口": "HAK",
-    "福州": "FOC",
-    "南宁": "NNG",
-    "贵阳": "KWE",
-    "长春": "CGQ",
-    "太原": "TYN",
-    "兰州": "LHW",
-    "乌鲁木齐": "URC",
-    "呼和浩特": "HET",
-    "银川": "INC",
-    "西宁": "XNN",
-    "拉萨": "LXA",
-    "合肥": "HFE",
-    "南昌": "KHN",
-    "石家庄": "SJW",
-    "温州": "WNZ",
-    "宁波": "NGB",
-    "无锡": "WUX",
-    "烟台": "YNT",
-    "珠海": "ZUH",
-    "汕头": "SWA",
-    "桂林": "KWL",
-    "北海": "BHY",
-    "丽江": "LJG",
-    "大理": "DLU",
-    "西双版纳": "JHG",
-    "惠州": "HUZ",
-}
+# 深圳航空城市代码映射（使用共享映射）
+SHENZHEN_CITY_CODE_MAP = COMMON_CITY_CODE_MAP
 
 SHENZHEN_AIRLINE_NAME = "深圳航空"
 
@@ -379,23 +331,22 @@ class ShenzhenCrawler(FlightCrawler):
         flights: List[Dict[str, Any]] = []
         seen = set()
 
-        # 使用 JavaScript 从页面提取航班数据
-        flight_data = await page.evaluate('''() => {
+        flight_data = await page.evaluate(r'''() => {
             const results = [];
             const bodyText = document.body.innerText;
 
             // 提取所有航班号（ZH 开头）
-            const flightNos = bodyText.match(/ZH\\d{3,4}/g) || [];
+            const flightNos = bodyText.match(/ZH\d{3,4}/g) || [];
 
             // 提取价格（¥ 后面的数字）
             const prices = [];
-            const priceMatches = bodyText.matchAll(/¥\\s*(\\d{3,5})/g);
+            const priceMatches = bodyText.matchAll(/¥\s*(\d{3,5})/g);
             for (const match of priceMatches) {
                 prices.push(parseInt(match[1]));
             }
 
             // 提取时间（格式：HH:MM）
-            const times = bodyText.match(/\\d{2}:\\d{2}/g) || [];
+            const times = bodyText.match(/\d{2}:\d{2}/g) || [];
 
             return {
                 flightNos: [...new Set(flightNos)],
@@ -454,34 +405,3 @@ class ShenzhenCrawler(FlightCrawler):
                 flights.append(flight)
 
         return flights
-
-    async def _save_debug_snapshot(
-        self, page: Page, route: Route, flight_date: date, suffix: str
-    ) -> None:
-        """保存调试快照"""
-        safe_name = f"shenzhen_{route.from_city}_{route.to_city}_{flight_date.isoformat()}_{suffix}"
-        html_path = self.debug_path / f"{safe_name}.html"
-        png_path = self.debug_path / f"{safe_name}.png"
-
-        try:
-            html_path.write_text(await page.content(), encoding="utf-8")
-        except Exception:
-            pass
-
-        try:
-            await page.screenshot(path=str(png_path), full_page=True)
-        except Exception:
-            pass
-
-    async def close(self) -> None:
-        """关闭浏览器资源"""
-        await self._save_cookies_from_context()
-        if self.context:
-            await self.context.close()
-            self.context = None
-        if self.browser:
-            await self.browser.close()
-            self.browser = None
-        if self.playwright:
-            await self.playwright.stop()
-            self.playwright = None

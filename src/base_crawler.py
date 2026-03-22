@@ -1,15 +1,24 @@
 from abc import ABC, abstractmethod
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import asyncio
-import random
 import logging
+import random
+
+from playwright.async_api import Page
 
 from src.config import Route
-from src.stealth import get_stealth_init_script, get_random_desktop_ua, get_random_viewport
 from src.cookie_manager import CookieManager
+from src.stealth import get_random_desktop_ua, get_random_viewport, get_stealth_init_script
 
 logger = logging.getLogger(__name__)
+
+# 通用反爬虫检测关键词
+COMMON_ANTIBOT_SIGNALS = [
+    "验证", "captcha", "拦截", "禁止访问",
+    "Too Many Requests", "访问频繁", "安全验证"
+]
 
 
 class FlightCrawler(ABC):
@@ -113,6 +122,61 @@ class FlightCrawler(ABC):
     async def search_flights(self, route: Route) -> List[Dict[str, Any]]:
         """Search flights and return normalized records."""
 
-    @abstractmethod
     async def close(self) -> None:
-        """Release crawler resources."""
+        """Release crawler resources (default implementation)."""
+        await self._save_cookies_from_context()
+        if self.context:
+            await self.context.close()
+            self.context = None
+        if self.browser:
+            await self.browser.close()
+            self.browser = None
+        if self.playwright:
+            await self.playwright.stop()
+            self.playwright = None
+
+    async def _check_antibot(self, page: Page, extra_signals: List[str] = None) -> bool:
+        """通用反爬虫检测
+
+        Args:
+            page: Playwright Page 对象
+            extra_signals: 额外的检测关键词
+
+        Returns:
+            是否检测到反爬虫
+        """
+        try:
+            title = await page.title()
+            url = page.url
+            signals = COMMON_ANTIBOT_SIGNALS + (extra_signals or [])
+            haystack = f"{title}\n{url}".lower()
+            return any(signal.lower() in haystack for signal in signals)
+        except Exception:
+            return False
+
+    async def _save_debug_snapshot(
+        self, page: Page, route: Route, flight_date: date, suffix: str
+    ) -> None:
+        """保存调试快照（默认实现）
+
+        Args:
+            page: Playwright Page 对象
+            route: 航线信息
+            flight_date: 航班日期
+            suffix: 文件名后缀
+        """
+        safe_name = f"{self.source}_{route.from_city}_{route.to_city}_{flight_date.isoformat()}_{suffix}"
+        debug_path = Path("logs")
+        debug_path.mkdir(parents=True, exist_ok=True)
+        html_path = debug_path / f"{safe_name}.html"
+        png_path = debug_path / f"{safe_name}.png"
+
+        try:
+            html_path.write_text(await page.content(), encoding="utf-8")
+        except Exception:
+            pass
+
+        try:
+            await page.screenshot(path=str(png_path), full_page=True)
+        except Exception:
+            pass

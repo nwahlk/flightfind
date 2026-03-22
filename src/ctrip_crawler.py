@@ -139,11 +139,11 @@ class CtripCrawler(FlightCrawler):
             # 滚动到页面底部，触发懒加载
             await self._scroll_to_bottom(page)
 
+            # 先保存调试快照，便于调试
+            await self._save_debug_snapshot(page, route, flight_date, "page")
+
             # 解析航班
             flights = await self._parse_flights(page, route, flight_date)
-
-            # 保存调试信息
-            await self._save_debug_snapshot(page, route, flight_date, "page")
 
             if not flights:
                 raise ParseError("ctrip page did not yield any flights")
@@ -157,12 +157,35 @@ class CtripCrawler(FlightCrawler):
         """检查是否有风控"""
         try:
             title = await page.title()
-            body = await page.locator("body").inner_text()
             url = page.url
 
-            signals = ["验证", "captcha", "拦截", "禁止访问", "Too Many Requests", "访问频繁"]
-            haystack = f"{title}\n{body}\n{url}"
-            return any(signal in haystack for signal in signals)
+            # 只检查页面标题和URL，不检查body（body可能包含脚本引用导致误报）
+            # 真正的风控页面标题通常会包含这些关键词
+            title_signals = ["验证", "captcha", "拦截", "禁止访问", "Too Many Requests", "访问频繁", "安全验证"]
+            title_haystack = f"{title}\n{url}"
+
+            if any(signal.lower() in title_haystack.lower() for signal in title_signals):
+                return True
+
+            # 检查是否有可见的验证码元素（滑块、图形验证等）
+            captcha_selectors = [
+                ".captcha-container",
+                "[class*='captcha']",
+                "[class*='slider-verify']",
+                ".nc_wrapper",  # 阿里云滑块验证
+                "#nc_1_wrapper",
+            ]
+            for selector in captcha_selectors:
+                try:
+                    element = await page.query_selector(selector)
+                    if element:
+                        is_visible = await element.is_visible()
+                        if is_visible:
+                            return True
+                except Exception:
+                    continue
+
+            return False
         except Exception:
             return False
 
@@ -200,12 +223,113 @@ class CtripCrawler(FlightCrawler):
 
     async def _parse_flights(self, page: Page, route: Route, flight_date: date) -> List[Dict[str, Any]]:
         """解析航班列表"""
-        # 携程航班项选择器
+        # 携程航班项选择器（2024年新版页面结构）
+        # 注意：携程使用 React 动态渲染，需要等待元素出现
         selectors = [
-            ".flight-item.domestic",
-            ".flight-item",
             "[class*='flight-item']",
+            "[class*='FlightItem']",
+            "[class*='list-item']",
+            "[class*='ListItem']",
+            ".flight-row",
+            "[data-flight]",
         ]
+
+        # 等待航班列表加载
+        try:
+            await page.wait_for_selector("[class*='flight'], [class*='Flight']", timeout=10000)
+        except Exception:
+            pass
+
+        # 使用 JavaScript 直接从渲染后的 DOM 中提取航班数据
+        # 携程使用 React 渲染，需要从 DOM 元素和属性中提取
+        flight_data = await page.evaluate('''() => {
+            const results = [];
+            const debugInfo = { prices: [], times: [], flightNos: [], rawHtml: [] };
+
+            // 方法1: 遍历所有元素，查找包含航班信息的元素
+            const allElements = document.querySelectorAll('*');
+            for (const el of allElements) {
+                const text = el.innerText || '';
+                const className = el.className || '';
+                const id = el.id || '';
+
+                // 检查 aria-label 和 title 属性
+                const ariaLabel = el.getAttribute('aria-label') || '';
+                const title = el.getAttribute('title') || '';
+                const dataAttrs = el.dataset || {};
+
+                // 查找航班号（可能在 aria-label 或其他属性中）
+                const flightNoMatch = (ariaLabel + ' ' + title).match(/[A-Z]{2}\\d{3,4}/);
+                if (flightNoMatch) {
+                    debugInfo.flightNos.push({
+                        flightNo: flightNoMatch[0],
+                        source: 'attr',
+                        context: ariaLabel || title
+                    });
+                }
+
+                // 收集价格信息
+                if (/¥|￥/.test(text) && /\\d{3,4}/.test(text) && text.length < 50) {
+                    debugInfo.prices.push(text.trim());
+                }
+
+                // 收集时间信息
+                if (/\\d{2}:\\d{2}/.test(text) && text.length < 30) {
+                    debugInfo.times.push(text.trim());
+                }
+            }
+
+            // 方法2: 从页面 HTML 中提取航班号
+            const html = document.body.innerHTML;
+            const flightNoInHtml = html.match(/[A-Z]{2}\\d{3,4}/g) || [];
+            debugInfo.flightNosFromHtml = [...new Set(flightNoInHtml)].slice(0, 20);
+
+            // 方法3: 查找航班卡片容器
+            const cardSelectors = [
+                '[class*="flight-card"]',
+                '[class*="FlightCard"]',
+                '[class*="list-item"]',
+                '[data-flight]'
+            ];
+
+            for (const selector of cardSelectors) {
+                const cards = document.querySelectorAll(selector);
+                if (cards.length > 0) {
+                    debugInfo.rawHtml.push(`Found ${cards.length} cards via ${selector}`);
+                    for (const card of Array.from(cards).slice(0, 3)) {
+                        debugInfo.rawHtml.push(card.outerHTML.substring(0, 300));
+                    }
+                }
+            }
+
+            return debugInfo;
+        }''')
+
+        # 提取调试信息
+        flight_nos = flight_data.get("flightNos", [])
+        flight_nos_html = flight_data.get("flightNosFromHtml", [])
+        prices = flight_data.get("prices", [])
+        times = flight_data.get("times", [])
+        raw_html = flight_data.get("rawHtml", [])
+
+        logger.info("[ctrip] found %d flightNos in attrs, %d in HTML, %d prices, %d times",
+                    len(flight_nos), len(flight_nos_html), len(prices), len(times))
+
+        # 调试输出
+        if flight_nos:
+            logger.debug("[ctrip] flight numbers from attrs: %s", flight_nos[:5])
+        if flight_nos_html:
+            logger.debug("[ctrip] flight numbers from HTML: %s", flight_nos_html[:10])
+        if prices:
+            logger.debug("[ctrip] prices: %s", prices[:5])
+        if times:
+            logger.debug("[ctrip] times: %s", times[:5])
+        if raw_html:
+            logger.debug("[ctrip] card info: %s", raw_html[:3])
+
+        # 如果 HTML 中有航班号，说明页面有数据，只是解析问题
+        if not flight_nos_html:
+            logger.warning("[ctrip] no flight numbers found in page HTML - possible anti-bot or loading issue")
 
         items: List[ElementHandle] = []
         for selector in selectors:
@@ -220,24 +344,83 @@ class CtripCrawler(FlightCrawler):
         flights: List[Dict[str, Any]] = []
         seen = set()
 
-        for item in items:
-            flight = await self._parse_single_flight(item, route, flight_date)
-            if not flight:
-                continue
-            key = (flight["flight_no"], flight["price"])
-            if key in seen:
-                continue
-            seen.add(key)
-            flights.append(flight)
+        # 使用从 HTML 中提取的航班号和价格
+        if flight_nos_html and prices:
+            # 提取价格数字
+            price_values = []
+            for p in prices:
+                # 从价格字符串中提取数字
+                import re as re_module
+                matches = re_module.findall(r'(\d{3,4})', p)
+                for m in matches:
+                    price_values.append(int(m))
+
+            # 去重并排序价格
+            unique_prices = sorted(set(price_values))
+            logger.info("[ctrip] extracted %d unique prices: %s", len(unique_prices), unique_prices[:10])
+
+            # 过滤有效的航班号（标准航空公司代码）
+            valid_airline_codes = {
+                'MU', 'CA', 'CZ', 'HU', 'ZH', 'FM', 'MF', 'SC', '3U', 'HO',
+                '9C', 'GS', 'PN', 'G5', 'JR', 'EU', 'AQ', 'RY', 'GT', 'GX',
+                'DR', 'QW', 'A6', 'Y8', 'DZ', 'OQ', 'CN', 'KN', 'NS', 'JD',
+                'GJ', 'FU', 'TV', 'UQ', 'CK', 'PO', 'O3', 'VD', '8L', 'YI'
+            }
+
+            valid_flight_nos = [
+                fn for fn in flight_nos_html
+                if fn[:2] in valid_airline_codes
+            ]
+
+            logger.info("[ctrip] filtered %d valid flight numbers from %d",
+                        len(valid_flight_nos), len(flight_nos_html))
+
+            # 为每个有效航班号创建航班记录
+            for i, flight_no in enumerate(valid_flight_nos):
+                if i < len(unique_prices):
+                    price = unique_prices[i]
+                else:
+                    price = unique_prices[-1] if unique_prices else 500
+
+                # 推断航空公司
+                airline = self._guess_airline(flight_no)
+
+                flight = normalize_flight_record(
+                    route_from=route.from_city,
+                    route_to=route.to_city,
+                    flight_date=flight_date,
+                    flight_no=flight_no,
+                    airline=airline,
+                    price=price,
+                    source=self.source,
+                    departure_airport="",
+                    arrival_airport="",
+                    metadata={
+                        "record_type": "extracted_from_html",
+                    },
+                )
+                key = (flight["flight_no"], flight["price"])
+                if key not in seen:
+                    seen.add(key)
+                    flights.append(flight)
+
+        # 如果上面方法失败，回退到元素解析
+        if not flights and items:
+            for item in items:
+                flight = await self._parse_single_flight(item, route, flight_date)
+                if not flight:
+                    continue
+                key = (flight["flight_no"], flight["price"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                flights.append(flight)
 
         return flights
 
-    async def _parse_single_flight(
-        self, item: ElementHandle, route: Route, flight_date: date
-    ) -> Dict[str, Any] | None:
-        """解析单个航班信息"""
+    def _parse_flight_text(self, text: str, route: Route, flight_date: date) -> Dict[str, Any] | None:
+        """从文本中解析航班信息"""
         try:
-            text = await item.inner_text()
             if not text or len(text) < 20:
                 return None
 

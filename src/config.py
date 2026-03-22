@@ -238,7 +238,7 @@ def load_config(config_path: Union[str, Path]) -> AppConfig:
 
 
 def _validate_config(config: AppConfig) -> None:
-    valid_sources = {"ctrip", "spring"}
+    valid_sources = {"ctrip", "spring", "juneyao", "shenzhen"}
     for source in config.monitor.sources:
         if source not in valid_sources:
             raise ConfigError(

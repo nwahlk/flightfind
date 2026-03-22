@@ -106,7 +106,8 @@ class SpringCrawler(FlightCrawler):
         results: List[Dict[str, Any]] = []
         for index, flight_date in enumerate(sorted(route.dates.absolute_dates)):
             if index:
-                await self._human_pause(8.0, 14.0)
+                # 增加延迟时间，避免 429 错误
+                await self._human_pause(30.0, 60.0)
             try:
                 if self._should_skip_list_page():
                     logger.info(
@@ -298,6 +299,8 @@ class SpringCrawler(FlightCrawler):
             ".flight-list-item",
             ".journey-item",
             ".flight-item",
+            ".flight-item-new",  # 新版类名
+            ".flight-row",
             "[class*='flight-item']",
             "[class*='journey-item']",
             "[class*='list-item']",

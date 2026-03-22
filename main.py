@@ -16,7 +16,9 @@ from src.config import load_config
 from src.ctrip_crawler import CtripCrawler
 from src.database import Database
 from src.exporter import FlightExporter
+from src.juneyao_crawler import JuneyaoCrawler
 from src.notifier import Notifier
+from src.shenzhen_crawler import ShenzhenCrawler
 from src.spring_crawler import SpringCrawler
 from src.utils import setup_logging
 
@@ -27,6 +29,10 @@ def create_crawler(source: str, headless: bool):
     """创建爬虫实例"""
     if source == "spring":
         return SpringCrawler(headless=headless)
+    elif source == "juneyao":
+        return JuneyaoCrawler(headless=headless)
+    elif source == "shenzhen":
+        return ShenzhenCrawler(headless=headless)
     else:  # 默认使用 ctrip
         return CtripCrawler(headless=headless)
 

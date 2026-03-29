@@ -1,6 +1,6 @@
 """
 Ctrip (携程) 航班爬虫
-URL格式: https://flights.ctrip.com/online/list/oneway-{from_code}-{to_code}?depdate={date}
+URL格式: https://flights.ctrip.com/booking/{from_code}-{to_code}-day-5.html?date={date}
 """
 
 import asyncio
@@ -18,7 +18,15 @@ from src.city_codes import COMMON_CITY_CODE_MAP
 from src.config import Route
 from src.exceptions import BrowserCrashError, CrawlerError, ParseError
 from src.flight_record import normalize_flight_record
-from src.utils import retry_with_backoff
+from src.utils import (
+    DOM_TEXT_WALKER_JS,
+    clean_dom_texts,
+    extract_airports,
+    extract_price_forward,
+    extract_terminals,
+    extract_times,
+    retry_with_backoff,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,16 +41,24 @@ def get_ctrip_city_code(city_name: str) -> str:
 
 
 def build_ctrip_url(from_city: str, to_city: str, flight_date: date) -> str:
-    """构建携程搜索 URL"""
+    """构建携程搜索 URL（booking 格式）"""
     from_code = get_ctrip_city_code(from_city)
     to_code = get_ctrip_city_code(to_city)
-    return f"https://flights.ctrip.com/online/list/oneway-{from_code}-{to_code}?_=1&depdate={flight_date.isoformat()}"
+    return f"https://flights.ctrip.com/booking/{from_code}-{to_code}-day-5.html?date={flight_date.isoformat()}"
 
 
 class CtripCrawler(FlightCrawler):
     """携程航班爬虫"""
 
     source = "ctrip"
+
+    # 有效航空公司代码前缀（唯一来源，JS 和 CSS 回退共用）
+    _valid_airline_codes = frozenset({
+        'MU', 'CA', 'CZ', 'HU', 'ZH', 'FM', 'MF', 'SC', '3U', 'HO',
+        '9C', 'GS', 'PN', 'G5', 'JR', 'EU', 'AQ', 'RY', 'GT', 'GX',
+        'DR', 'QW', 'A6', 'Y8', 'DZ', 'OQ', 'CN', 'KN', 'NS', 'JD',
+        'GJ', 'FU', 'TV', 'UQ', 'CK', 'KY', 'PO', 'O3', 'VD', '8L', 'YI',
+    })
 
     def __init__(self, headless: bool = True, cookie_dir: Path = None):
         super().__init__(
@@ -118,8 +134,11 @@ class CtripCrawler(FlightCrawler):
             # 先保存调试快照，便于调试
             await self._save_debug_snapshot(page, route, flight_date, "page")
 
-            # 解析航班
-            flights = await self._parse_flights(page, route, flight_date)
+            # 优先使用 DOM 文本解析，失败则回退到 CSS 选择器解析
+            flights = await self._parse_flights_from_dom(page, route, flight_date)
+            if not flights:
+                logger.info("[ctrip] a11y parsing yielded no results, falling back to CSS selectors")
+                flights = await self._parse_flights(page, route, flight_date)
 
             if not flights:
                 raise ParseError("ctrip page did not yield any flights")
@@ -196,6 +215,87 @@ class CtripCrawler(FlightCrawler):
         await page.wait_for_timeout(random.randint(500, 1000))
 
         logger.info("[ctrip] scroll completed")
+
+    async def _parse_flights_from_dom(self, page: Page, route: Route, flight_date: date) -> List[Dict[str, Any]]:
+        """通过 DOM 文本解析航班列表，按"订票"按钮分割航班块"""
+        try:
+            flight_blocks = await page.evaluate(DOM_TEXT_WALKER_JS, "订票")
+        except Exception as exc:
+            logger.warning("[ctrip] DOM text extraction failed: %s", exc)
+            return []
+
+        if not flight_blocks:
+            return []
+
+        logger.info("[ctrip] found %d flight blocks from DOM", len(flight_blocks))
+
+        flights: List[Dict[str, Any]] = []
+        seen = set()
+
+        for block in flight_blocks:
+            flight = self._parse_dom_flight_block(block, route, flight_date)
+            if not flight:
+                continue
+            key = (flight["flight_no"], flight["price"])
+            if key not in seen:
+                seen.add(key)
+                flights.append(flight)
+
+        logger.info("[ctrip] parsed %d flights from DOM", len(flights))
+        return flights
+
+    def _parse_dom_flight_block(self, block: List[str], route: Route, flight_date: date) -> Dict[str, Any] | None:
+        """从单个 DOM 文本块中提取航班信息
+
+        块内文本顺序：[航空公司名] [航班号] [机型] [出发时间] [出发机场] [航站楼]
+        [到达时间] [到达机场] [航站楼] [¥] [价格] [起] [舱等] [折扣]
+        """
+        cleaned = clean_dom_texts(block)
+
+        flight_no, flight_no_idx = self._find_flight_no(cleaned)
+        if not flight_no:
+            return None
+
+        airline = cleaned[flight_no_idx - 1] if flight_no_idx > 0 else self._guess_airline(flight_no)
+        remaining = cleaned[flight_no_idx + 1:]
+
+        dep_time, arr_time = extract_times(remaining)
+        dep_airport, arr_airport = extract_airports(remaining)
+
+        terminals = extract_terminals(remaining)
+        if dep_airport and terminals:
+            dep_airport = f"{dep_airport}{terminals[0]}"
+        if arr_airport and len(terminals) > 1:
+            arr_airport = f"{arr_airport}{terminals[1]}"
+
+        price = extract_price_forward(remaining)
+        if price <= 0:
+            return None
+
+        return normalize_flight_record(
+            route_from=route.from_city,
+            route_to=route.to_city,
+            flight_date=flight_date,
+            flight_no=flight_no,
+            airline=airline,
+            price=price,
+            source=self.source,
+            departure_airport=dep_airport,
+            arrival_airport=arr_airport,
+            metadata={
+                "record_type": "dom_text_block",
+                "departure_time": dep_time,
+                "arrival_time": arr_time,
+            },
+        )
+
+    def _find_flight_no(self, cleaned: List[str]) -> tuple[str, int]:
+        """在文本块中查找有效航班号及其位置"""
+        for i, text in enumerate(cleaned):
+            match = re.search(r"\b([A-Z]{2}\d{3,4})\b", text)
+            if match and match.group(1)[:2] in self._valid_airline_codes:
+                return match.group(1), i
+        return "", -1
 
     async def _parse_flights(self, page: Page, route: Route, flight_date: date) -> List[Dict[str, Any]]:
         """解析航班列表"""
@@ -331,12 +431,7 @@ class CtripCrawler(FlightCrawler):
             logger.info("[ctrip] extracted %d unique prices: %s", len(unique_prices), unique_prices[:10])
 
             # 过滤有效的航班号（标准航空公司代码）
-            valid_airline_codes = {
-                'MU', 'CA', 'CZ', 'HU', 'ZH', 'FM', 'MF', 'SC', '3U', 'HO',
-                '9C', 'GS', 'PN', 'G5', 'JR', 'EU', 'AQ', 'RY', 'GT', 'GX',
-                'DR', 'QW', 'A6', 'Y8', 'DZ', 'OQ', 'CN', 'KN', 'NS', 'JD',
-                'GJ', 'FU', 'TV', 'UQ', 'CK', 'PO', 'O3', 'VD', '8L', 'YI'
-            }
+            valid_airline_codes = self._valid_airline_codes
 
             valid_flight_nos = [
                 fn for fn in flight_nos_html
@@ -487,6 +582,5 @@ class CtripCrawler(FlightCrawler):
             "FU": "福州航空",
             "TV": "西藏航空",
             "UQ": "乌鲁木齐航空",
-            "RY": "江西航空",
         }
         return airline_map.get(prefix, prefix)

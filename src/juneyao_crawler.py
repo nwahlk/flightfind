@@ -19,7 +19,13 @@ from src.city_codes import COMMON_CITY_CODE_MAP
 from src.config import Route
 from src.exceptions import BrowserCrashError, CrawlerError, ParseError
 from src.flight_record import normalize_flight_record
-from src.utils import retry_with_backoff
+from src.utils import (
+    DOM_TEXT_WALKER_JS,
+    clean_dom_texts,
+    extract_price_backward,
+    extract_times,
+    retry_with_backoff,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -224,105 +230,83 @@ class JuneyaoCrawler(FlightCrawler):
     async def _parse_flights(
         self, page: Page, route: Route, flight_date: date
     ) -> List[Dict[str, Any]]:
-        """解析航班列表"""
+        """解析航班列表，按航班号 HO 分割航班块"""
         flights: List[Dict[str, Any]] = []
         seen = set()
 
-        flight_data = await page.evaluate(r'''() => {
-            const results = [];
-            const bodyText = document.body.innerText;
-
-            // 提取所有航班号（HO 开头）
-            const flightNos = bodyText.match(/HO\d{3,4}/g) || [];
-
-            // 提取价格（¥ 后面的数字）
-            const prices = [];
-            const priceMatches = bodyText.matchAll(/¥(\d{3,5})/g);
-            for (const match of priceMatches) {
-                prices.push(parseInt(match[1]));
-            }
-
-            // 提取时间（格式：HH:MM）
-            const times = bodyText.match(/\d{2}:\d{2}/g) || [];
-
-            // 提取机场信息
-            const airports = [];
-            const airportMatches = bodyText.matchAll(/(宝安T3|虹桥T2|浦东T1|浦东T2|首都T[123]|大兴|白云T[12]|天府T[12]|[\u4e00-\u9fa5]+机场T?\d?)/g);
-            for (const match of airportMatches) {
-                airports.push(match[1]);
-            }
-
-            return {
-                flightNos: [...new Set(flightNos)],
-                prices: prices,
-                times: times,
-                airports: airports,
-                rawText: bodyText.substring(0, 2000)
-            };
-        }''')
-
-        flight_nos = flight_data.get("flightNos", [])
-        prices = flight_data.get("prices", [])
-        times = flight_data.get("times", [])
-        airports = flight_data.get("airports", [])
-
-        logger.info(
-            "[juneyao] extracted %d flight numbers, %d prices, %d times, %d airports",
-            len(flight_nos),
-            len(prices),
-            len(times),
-            len(airports),
-        )
-
-        if not flight_nos:
-            logger.warning("[juneyao] no flight numbers found in page")
+        try:
+            flight_blocks = await page.evaluate(DOM_TEXT_WALKER_JS, "flight_no")
+        except Exception as exc:
+            logger.warning("[juneyao] DOM text extraction failed: %s", exc)
             return []
 
-        # 去重价格
-        unique_prices = sorted(set(prices))
-        logger.info("[juneyao] unique prices: %s", unique_prices[:10])
+        if not flight_blocks:
+            logger.warning("[juneyao] no flight blocks found in DOM")
+            return []
 
-        # 为每个航班创建记录
-        for i, flight_no in enumerate(flight_nos):
-            # 获取对应的价格
-            if i < len(unique_prices):
-                price = unique_prices[i]
-            elif unique_prices:
-                price = unique_prices[-1]
-            else:
-                price = 0
+        logger.info("[juneyao] found %d flight blocks from DOM", len(flight_blocks))
 
-            if price < 100:  # 过滤无效价格
+        for block in flight_blocks:
+            flight = self._parse_dom_flight_block(block, route, flight_date)
+            if not flight:
                 continue
-
-            # 推断出发和到达机场
-            dep_airport = airports[0] if len(airports) > 0 else ""
-            arr_airport = airports[1] if len(airports) > 1 else ""
-
-            # 推断起降时间
-            dep_time = times[i * 2] if len(times) > i * 2 else ""
-            arr_time = times[i * 2 + 1] if len(times) > i * 2 + 1 else ""
-
-            flight = normalize_flight_record(
-                route_from=route.from_city,
-                route_to=route.to_city,
-                flight_date=flight_date,
-                flight_no=flight_no,
-                airline=JUNEYAO_AIRLINE_NAME,
-                price=price,
-                source=self.source,
-                departure_airport=dep_airport,
-                arrival_airport=arr_airport,
-                metadata={
-                    "record_type": "extracted_from_page",
-                    "departure_time": dep_time,
-                    "arrival_time": arr_time,
-                },
-            )
-
             key = (flight["flight_no"], flight["price"])
             if key not in seen:
                 seen.add(key)
                 flights.append(flight)
 
         return flights
+
+    # 已知机场简称（名称+航站楼）
+    _airport_pattern = re.compile(
+        r"^(宝安T\d|虹桥T\d|浦东T\d|首都T\d|大兴|白云T\d|天府T\d|"
+        r"深圳宝安|上海虹桥|上海浦东|北京首都|北京大兴|广州白云|成都天府|"
+        r"[\u4e00-\u9fa5]+国际机场[\u4e00-\u9fa5]*|"
+        r"[\u4e00-\u9fa5]+机场)$"
+    )
+
+    def _parse_dom_flight_block(self, block: List[str], route: Route, flight_date: date) -> Dict[str, Any] | None:
+        """从单个 DOM 文本块中提取航班信息
+
+        块内文本顺序：[出发时间] [出发机场] [飞行时长] [到达时间] [到达机场]
+        [¥] [价格] [起] [舱等] [航班号 HOxxxx]
+        """
+        cleaned = clean_dom_texts(block)
+
+        flight_no = ""
+        flight_no_idx = -1
+        for i, text in enumerate(cleaned):
+            if re.match(r"^HO\d{3,4}$", text):
+                flight_no = text
+                flight_no_idx = i
+                break
+
+        if not flight_no:
+            return None
+
+        dep_time, arr_time = extract_times(cleaned)
+
+        airports = [t for t in cleaned if self._airport_pattern.match(t)]
+        dep_airport = airports[0] if airports else ""
+        arr_airport = airports[1] if len(airports) > 1 else ""
+
+        price = extract_price_backward(cleaned[:flight_no_idx])
+        if price <= 0:
+            return None
+
+        return normalize_flight_record(
+            route_from=route.from_city,
+            route_to=route.to_city,
+            flight_date=flight_date,
+            flight_no=flight_no,
+            airline=JUNEYAO_AIRLINE_NAME,
+            price=price,
+            source=self.source,
+            departure_airport=dep_airport,
+            arrival_airport=arr_airport,
+            metadata={
+                "record_type": "dom_text_block",
+                "departure_time": dep_time,
+                "arrival_time": arr_time,
+            },
+        )

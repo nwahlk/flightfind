@@ -20,7 +20,14 @@ from src.city_codes import COMMON_CITY_CODE_MAP
 from src.config import Route
 from src.exceptions import BrowserCrashError, CrawlerError, ParseError
 from src.flight_record import normalize_flight_record
-from src.utils import retry_with_backoff
+from src.utils import (
+    DOM_TEXT_WALKER_JS,
+    clean_dom_texts,
+    extract_airports,
+    extract_price_forward,
+    extract_times,
+    retry_with_backoff,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +276,19 @@ class SpringCrawler(FlightCrawler):
         return any(signal in haystack for signal in signals)
 
     async def _parse_list_page(self, page: Page, route: Route, flight_date: date) -> List[Dict[str, Any]]:
+        """解析航班列表
+
+        优先使用 DOM 文本块解析，失败则回退到 CSS 选择器解析。
+        春秋航空页面结构（a11y 树实测确认）：
+        春秋航空 9C8956 → 机型 空客321 → 07:15 → 宝安国际机场T3 → 2小时 20分 → 09:35 → 虹桥国际机场T1 → ¥ 1230 起 → 订票
+        """
+        # 优先用 DOM 文本块解析
+        flights = await self._parse_list_page_from_dom(page, route, flight_date)
+        if flights:
+            return flights
+
+        # 回退到 CSS 选择器
+        logger.info("[spring] DOM parsing yielded no results, falling back to CSS selectors")
         selectors = [
             ".flight-item-new",
             ".flight-list .flight-item-new",
@@ -276,7 +296,6 @@ class SpringCrawler(FlightCrawler):
             ".flight-list-item",
             ".journey-item",
             ".flight-item",
-            ".flight-item-new",  # 新版类名
             ".flight-row",
             "[class*='flight-item']",
             "[class*='journey-item']",
@@ -304,6 +323,82 @@ class SpringCrawler(FlightCrawler):
             seen.add(dedupe_key)
             flights.append(flight)
         return flights
+
+    async def _parse_list_page_from_dom(self, page: Page, route: Route, flight_date: date) -> List[Dict[str, Any]]:
+        """通过 DOM 文本块解析春秋航空航班列表，按"订票"按钮分割航班块"""
+        try:
+            flight_blocks = await page.evaluate(DOM_TEXT_WALKER_JS, "订票")
+        except Exception as exc:
+            logger.warning("[spring] DOM text extraction failed: %s", exc)
+            return []
+
+        if not flight_blocks:
+            return []
+
+        logger.info("[spring] found %d flight blocks from DOM", len(flight_blocks))
+
+        flights: List[Dict[str, Any]] = []
+        seen = set()
+
+        for block in flight_blocks:
+            flight = self._parse_spring_dom_block(block, route, flight_date)
+            if not flight:
+                continue
+            key = (flight["flight_no"], flight["price"])
+            if key not in seen:
+                seen.add(key)
+                flights.append(flight)
+
+        logger.info("[spring] parsed %d flights from DOM", len(flights))
+        return flights
+
+    def _parse_spring_dom_block(self, block: List[str], route: Route, flight_date: date) -> Dict[str, Any] | None:
+        """从单个 DOM 文本块中提取春秋航空航班信息
+
+        块内文本顺序：[春秋航空 9Cxxxx] [机型] [出发时间] [出发机场] [飞行时长]
+        [到达时间] [到达机场] [¥] [价格] [起]
+        注意：第一个块可能包含页面导航和日历文本，需要从航班号位置之后提取。
+        """
+        cleaned = clean_dom_texts(block)
+
+        flight_no = ""
+        flight_no_idx = -1
+        for i, text in enumerate(cleaned):
+            match = re.search(r"\b(9C\d{3,4})\b", text)
+            if match:
+                flight_no = match.group(1)
+                flight_no_idx = i
+                break
+
+        if not flight_no:
+            return None
+
+        # 从航班号之后提取，避免匹配到块前面的日历价格
+        remaining = cleaned[flight_no_idx + 1:]
+        dep_time, arr_time = extract_times(remaining)
+        dep_airport, arr_airport = extract_airports(remaining)
+        price = extract_price_forward(remaining)
+
+        if price <= 0:
+            return None
+
+        return normalize_flight_record(
+            route_from=route.from_city,
+            route_to=route.to_city,
+            flight_date=flight_date,
+            flight_no=flight_no,
+            airline=SPRING_AIRLINE_NAME,
+            price=price,
+            source=self.source,
+            departure_airport=dep_airport,
+            arrival_airport=arr_airport,
+            metadata={
+                "record_type": "dom_text_block",
+                "departure_time": dep_time,
+                "arrival_time": arr_time,
+            },
+            allow_empty_flight_no=True,
+        )
 
     async def _parse_single_list_item(
         self,

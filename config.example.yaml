@@ -1,11 +1,11 @@
 # FlightFind 机票监控配置示例
-# 支持数据源: ctrip(携程), spring(春秋航空)
+# 支持数据源: flyai(飞猪机票), flyai_train(高铁/火车), spring(春秋航空)
 
 monitor:
   # 数据源列表，可选择一个或多个
-  # 单数据源示例: ["ctrip"] 或 ["spring"]
-  # 多数据源示例: ["ctrip", "spring"]
-  sources: ["ctrip"]
+  # 单数据源示例: ["flyai"]、["flyai_train"] 或 ["spring"]
+  # 多数据源示例: ["flyai", "flyai_train", "spring"]
+  sources: ["flyai", "flyai_train", "spring"]
 
   check_interval: 30  # 检查间隔，单位：分钟
   headless: true      # true=无界面运行，false=显示浏览器窗口（调试用）
@@ -28,6 +28,13 @@ routes:
 default_dates:
   mode: "absolute"
   absolute_dates: []
+
+# FlyAI 正式凭证（可选）
+# 推荐优先使用环境变量 FLYAI_API_KEY / FLYAI_SIGN_SECRET，避免把密钥写入配置文件。
+# 留空时会沿用 flyai CLI 默认行为，包括 ~/.flyai 配置；没有正式凭证时可能只返回体验模式数据。
+# flyai:
+#   api_key: ""
+#   sign_secret: ""
 
 notifications:
   email:

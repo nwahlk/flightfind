@@ -21,14 +21,6 @@ class BrowserCrashError(CrawlerError):
     """Browser startup or runtime error."""
 
 
-class NetworkError(CrawlerError):
-    """Network request error."""
-
-
-class TimeoutError(CrawlerError):
-    """Timeout error."""
-
-
 class ParseError(CrawlerError):
     """Response parsing error."""
 
@@ -39,7 +31,3 @@ class AntiBotError(CrawlerError):
 
 class NotifierError(FlightFindError):
     """Notification sending error."""
-
-
-class RetryExhaustedError(FlightFindError):
-    """Retry attempts exhausted."""

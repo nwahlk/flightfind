@@ -1,6 +1,5 @@
-"""共享的城市代码映射（IATA 代码）"""
+"""Shared IATA city code mapping."""
 
-# 通用城市代码映射（覆盖国内主要城市）
 COMMON_CITY_CODE_MAP = {
     "北京": "BJS",
     "上海": "SHA",
@@ -55,16 +54,3 @@ COMMON_CITY_CODE_MAP = {
     "揭阳": "SWA",
     "惠州": "HUZ",
 }
-
-
-def get_city_code(city_name: str, fallback: str = None) -> str:
-    """获取城市 IATA 代码
-
-    Args:
-        city_name: 城市名称（中文）
-        fallback: 找不到时返回的默认值，默认返回原城市名
-
-    Returns:
-        城市 IATA 代码
-    """
-    return COMMON_CITY_CODE_MAP.get(city_name, fallback or city_name)

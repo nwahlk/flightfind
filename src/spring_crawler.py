@@ -1,6 +1,4 @@
-"""
-Spring Airlines official-site crawler.
-"""
+"""Spring Airlines official-site crawler."""
 
 import asyncio
 import json
@@ -31,10 +29,7 @@ from src.utils import (
 
 logger = logging.getLogger(__name__)
 
-
-# 春秋航空城市代码映射（使用共享映射）
 SPRING_CITY_CODE_MAP = COMMON_CITY_CODE_MAP
-
 SPRING_AIRLINE_NAME = "春秋航空"
 
 
@@ -88,9 +83,8 @@ class SpringCrawler(FlightCrawler):
     @retry_with_backoff(max_attempts=3, base_delay=4.0)
     async def search_flights(self, route: Route) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
-        for index, flight_date in enumerate(sorted(route.dates.absolute_dates)):
+        for index, flight_date in enumerate(sorted(route.dates.resolved_dates())):
             if index:
-                # 增加延迟时间，避免 429 错误
                 await self._human_pause(30.0, 60.0)
             try:
                 if self._should_skip_list_page():
@@ -276,18 +270,10 @@ class SpringCrawler(FlightCrawler):
         return any(signal in haystack for signal in signals)
 
     async def _parse_list_page(self, page: Page, route: Route, flight_date: date) -> List[Dict[str, Any]]:
-        """解析航班列表
-
-        优先使用 DOM 文本块解析，失败则回退到 CSS 选择器解析。
-        春秋航空页面结构（a11y 树实测确认）：
-        春秋航空 9C8956 → 机型 空客321 → 07:15 → 宝安国际机场T3 → 2小时 20分 → 09:35 → 虹桥国际机场T1 → ¥ 1230 起 → 订票
-        """
-        # 优先用 DOM 文本块解析
         flights = await self._parse_list_page_from_dom(page, route, flight_date)
         if flights:
             return flights
 
-        # 回退到 CSS 选择器
         logger.info("[spring] DOM parsing yielded no results, falling back to CSS selectors")
         selectors = [
             ".flight-item-new",
@@ -325,7 +311,6 @@ class SpringCrawler(FlightCrawler):
         return flights
 
     async def _parse_list_page_from_dom(self, page: Page, route: Route, flight_date: date) -> List[Dict[str, Any]]:
-        """通过 DOM 文本块解析春秋航空航班列表，按"订票"按钮分割航班块"""
         try:
             flight_blocks = await page.evaluate(DOM_TEXT_WALKER_JS, "订票")
         except Exception as exc:
@@ -353,27 +338,20 @@ class SpringCrawler(FlightCrawler):
         return flights
 
     def _parse_spring_dom_block(self, block: List[str], route: Route, flight_date: date) -> Dict[str, Any] | None:
-        """从单个 DOM 文本块中提取春秋航空航班信息
-
-        块内文本顺序：[春秋航空 9Cxxxx] [机型] [出发时间] [出发机场] [飞行时长]
-        [到达时间] [到达机场] [¥] [价格] [起]
-        注意：第一个块可能包含页面导航和日历文本，需要从航班号位置之后提取。
-        """
         cleaned = clean_dom_texts(block)
 
         flight_no = ""
         flight_no_idx = -1
-        for i, text in enumerate(cleaned):
+        for index, text in enumerate(cleaned):
             match = re.search(r"\b(9C\d{3,4})\b", text)
             if match:
                 flight_no = match.group(1)
-                flight_no_idx = i
+                flight_no_idx = index
                 break
 
         if not flight_no:
             return None
 
-        # 从航班号之后提取，避免匹配到块前面的日历价格
         remaining = cleaned[flight_no_idx + 1:]
         dep_time, arr_time = extract_times(remaining)
         dep_airport, arr_airport = extract_airports(remaining)
@@ -413,78 +391,10 @@ class SpringCrawler(FlightCrawler):
 
             flight_no = (await item.get_attribute("data-shizhu-flightno") or "").strip().upper()
             if not flight_no:
-                flight_no_text = await self._get_text(
-                    item,
-                    [
-                        ".f-c-name",
-                        "[data-flight-no]",
-                        ".flight-no",
-                        "[class*='flight-no']",
-                        "[class*='flightNo']",
-                        ".journey-no",
-                    ],
-                )
-                flight_match = re.search(r"\b([A-Z0-9]{2,3}\d{3,4})\b", f"{flight_no_text} {raw_text}")
+                flight_match = re.search(r"\b([A-Z0-9]{2,3}\d{3,4})\b", raw_text)
                 flight_no = flight_match.group(1) if flight_match else ""
 
-            airline_text = await self._get_text(
-                item,
-                [
-                    ".f-c-name",
-                    "[data-airline]",
-                    ".airline-name",
-                    "[class*='airline']",
-                    ".journey-airline",
-                ],
-            )
-            airline = re.sub(r"\b[A-Z0-9]{2,3}\d{3,4}\b", "", airline_text).strip() or SPRING_AIRLINE_NAME
-
-            departure_time = await self._get_text(
-                item,
-                [
-                    ".f-ori .f-time em",
-                    ".f-ori .f-time",
-                    "[class*='depart'] .time em",
-                ],
-            )
-            arrival_time = await self._get_text(
-                item,
-                [
-                    ".f-des .f-time em",
-                    ".f-des .f-time",
-                    "[class*='arrive'] .time em",
-                ],
-            )
-            departure_airport = await self._get_text(
-                item,
-                [
-                    ".f-ori .f-airport",
-                    "[class*='depart'] .airport",
-                ],
-            )
-            arrival_airport = await self._get_text(
-                item,
-                [
-                    ".f-des .f-airport",
-                    "[class*='arrive'] .airport",
-                ],
-            )
-            duration_text = await self._get_text(
-                item,
-                [
-                    ".f-during .f-time",
-                    "[class*='during'] .time",
-                ],
-            )
-            aircraft_type = await self._get_text(
-                item,
-                [
-                    ".f-a-name",
-                    "[class*='aircraft']",
-                ],
-            )
-            segment_id = (await item.get_attribute("data-shizhu-segmentid") or "").strip()
-
+            airline = SPRING_AIRLINE_NAME
             price_text = await self._get_text(
                 item,
                 [
@@ -505,18 +415,6 @@ class SpringCrawler(FlightCrawler):
             if price < 10:
                 return None
 
-            metadata: Dict[str, Any] = {"record_type": "flight_list_page"}
-            if duration_text:
-                metadata["duration"] = duration_text
-            if aircraft_type:
-                metadata["aircraft_type"] = aircraft_type
-            if segment_id:
-                metadata["segment_id"] = segment_id
-            if departure_time:
-                metadata["departure_time"] = departure_time
-            if arrival_time:
-                metadata["arrival_time"] = arrival_time
-
             return normalize_flight_record(
                 route_from=route.from_city,
                 route_to=route.to_city,
@@ -525,9 +423,7 @@ class SpringCrawler(FlightCrawler):
                 airline=airline,
                 price=price,
                 source=self.source,
-                departure_airport=departure_airport,
-                arrival_airport=arrival_airport,
-                metadata=metadata,
+                metadata={"record_type": "flight_list_page"},
                 allow_empty_flight_no=True,
             )
         except Exception:

@@ -37,12 +37,8 @@ class Notifier:
         # 过滤已发送过的航班
         new_flights = []
         for flight in flights:
-            alert_id = (
-                f"{flight['route_from']}-{flight['route_to']}-"
-                f"{flight_date.isoformat()}-{flight['flight_no']}-{flight['source']}"
-            )
+            alert_id = self._alert_id(flight, flight_date)
             if alert_id not in self._history:
-                self._history.add(alert_id)
                 new_flights.append(flight)
 
         if not new_flights:
@@ -79,7 +75,19 @@ class Notifier:
 
         if tasks:
             import asyncio
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            if not any(not isinstance(result, Exception) for result in results):
+                logger.error("All notification channels failed for %s", title)
+                return
+
+            for flight in sorted_flights:
+                self._history.add(self._alert_id(flight, flight_date))
+
+    def _alert_id(self, flight: Dict[str, Any], flight_date) -> str:
+        return (
+            f"{flight['route_from']}-{flight['route_to']}-"
+            f"{flight_date.isoformat()}-{flight['flight_no']}-{flight['source']}"
+        )
 
     def _filter_by_time(
         self,
@@ -189,6 +197,7 @@ class Notifier:
             logger.info("Email alert sent: %s", title)
         except Exception as exc:
             logger.error("Email alert failed: %s", exc)
+            raise NotifierError(f"Email alert failed: {exc}") from exc
 
     async def _send_webhook(self, title: str, content: str) -> None:
         cfg = self.config.webhook
@@ -224,6 +233,7 @@ class Notifier:
             logger.info("Webhook alert sent: %s", title)
         except Exception as exc:
             logger.error("Webhook alert failed: %s", exc)
+            raise NotifierError(f"Webhook alert failed: {exc}") from exc
 
     async def _send_bark(self, title: str, content: str) -> None:
         cfg = self.config.bark
@@ -242,3 +252,4 @@ class Notifier:
             logger.info("Bark alert sent: %s", title)
         except Exception as exc:
             logger.error("Bark alert failed: %s", exc)
+            raise NotifierError(f"Bark alert failed: {exc}") from exc

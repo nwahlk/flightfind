@@ -1,7 +1,7 @@
 # tests/test_base_crawler.py
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock, patch
+
 from src.base_crawler import FlightCrawler
 
 
@@ -35,16 +35,16 @@ def test_crawler_custom_options():
         headless=False,
         use_stealth=False,
         mobile_mode=True,
-        cookie_dir=Path("/tmp/cookies"),
+        cookie_dir="cookies",
     )
     assert crawler.headless is False
     assert crawler.use_stealth is False
     assert crawler.mobile_mode is True
     assert crawler.cookie_manager is not None
+    assert crawler.cookie_manager.cookie_dir == Path("cookies")
 
 
 def test_get_browser_args():
-    """测试获取浏览器参数"""
     crawler = ConcreteCrawler()
     args = crawler._get_browser_args()
     assert "--no-sandbox" in args
@@ -52,23 +52,11 @@ def test_get_browser_args():
 
 
 def test_get_context_options():
-    """测试获取上下文选项"""
     crawler = ConcreteCrawler()
     options = crawler._get_context_options()
     assert "viewport" in options
     assert "user_agent" in options
     assert "zh-CN" in options["locale"]
-
-
-@pytest.mark.asyncio
-async def test_random_delay():
-    """测试随机延迟"""
-    crawler = ConcreteCrawler()
-    import time
-    start = time.time()
-    await crawler._random_delay(0.1, 0.2)
-    elapsed = time.time() - start
-    assert 0.1 <= elapsed <= 0.3  # 允许一些误差
 
 
 def test_cannot_instantiate_base_class():

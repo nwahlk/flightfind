@@ -85,7 +85,7 @@ class Database:
         async with self._get_connection() as db:
             for table in ["price_history", "low_price_alerts", "execution_logs"]:
                 try:
-                    await db.execute(f"ALTER TABLE {table} ADD COLUMN source TEXT DEFAULT 'ctrip'")
+                    await db.execute(f"ALTER TABLE {table} ADD COLUMN source TEXT DEFAULT 'flyai'")
                     logger.info("Added source column to %s", table)
                 except aiosqlite.OperationalError as exc:
                     if "duplicate column name" not in str(exc).lower():
@@ -111,7 +111,7 @@ class Database:
         flight_no: str,
         airline: str,
         price: int,
-        source: str = "ctrip",
+        source: str = "flyai",
     ) -> None:
         async with self._get_connection() as db:
             await db.execute(
@@ -134,7 +134,7 @@ class Database:
         price: int,
         threshold: int,
         channels: List[str],
-        source: str = "ctrip",
+        source: str = "flyai",
     ) -> None:
         async with self._get_connection() as db:
             await db.execute(
@@ -166,7 +166,7 @@ class Database:
         status: str,
         message: Optional[str] = None,
         execution_time_ms: Optional[int] = None,
-        source: str = "ctrip",
+        source: str = "flyai",
     ) -> None:
         async with self._get_connection() as db:
             await db.execute(

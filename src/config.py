@@ -3,13 +3,21 @@ Application configuration models and loader.
 """
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import List, Literal, Union
 
 import yaml
 
 from src.exceptions import ConfigError
+
+
+SOURCE_ALIASES = {
+    "feizhu": "flyai",
+    "train": "flyai_train",
+    "gaotie": "flyai_train",
+    "highspeed_rail": "flyai_train",
+}
 
 
 AIRPORT_NAMES = {
@@ -68,6 +76,15 @@ class DateConfig:
             return cls(mode=mode, absolute_dates=dates)
 
         return cls(mode=mode, relative_days=data.get("relative_days", []))
+
+    def resolved_dates(self, base_date: date | None = None) -> List[date]:
+        """Return concrete dates for either absolute or relative mode."""
+
+        if self.absolute_dates:
+            return list(self.absolute_dates)
+
+        base = base_date or date.today()
+        return [base + timedelta(days=days) for days in self.relative_days]
 
 
 @dataclass
@@ -139,21 +156,57 @@ class BarkConfig:
 
 
 @dataclass
+@dataclass
+class FlyAIConfig:
+    """FlyAI CLI credential overrides.
+
+    Empty values keep the CLI default behavior, including environment variables
+    and the user's ~/.flyai profile.
+    """
+
+    api_key: str = ""
+    sign_secret: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "FlyAIConfig":
+        if not data:
+            return cls()
+        return cls(
+            api_key=data.get("api_key", ""),
+            sign_secret=data.get("sign_secret", ""),
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key or self.sign_secret)
+
+
+@dataclass
 class MonitorConfig:
     check_interval: int = 30
     headless: bool = True
-    sources: List[str] = field(default_factory=lambda: ["ctrip"])
+    sources: List[str] = field(default_factory=lambda: ["flyai"])
 
     @classmethod
     def from_dict(cls, data: dict) -> "MonitorConfig":
-        sources = data.get("sources", ["ctrip"])
+        sources = data.get("sources")
+        if sources is None:
+            # Backward compatibility for older config files.
+            sources = [data.get("default_source", "flyai")]
         if isinstance(sources, str):
             sources = [s.strip() for s in sources.split(",")]
+        sources = [SOURCE_ALIASES.get(source, source) for source in sources if source]
         return cls(
             check_interval=data.get("check_interval", 30),
             headless=data.get("headless", True),
             sources=sources,
         )
+
+    @property
+    def default_source(self) -> str:
+        """Compatibility alias for the first configured source."""
+
+        return self.sources[0] if self.sources else ""
 
 
 @dataclass
@@ -202,15 +255,23 @@ class AppConfig:
     default_dates: DateConfig
     notifications: NotificationsConfig
     captcha: CaptchaConfig = None
+    flyai: FlyAIConfig = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "AppConfig":
+        default_dates = DateConfig.from_dict(data.get("default_dates", {}))
+        routes = [Route.from_dict(item) for item in data.get("routes", [])]
+        for route in routes:
+            if not route.dates.absolute_dates and not route.dates.relative_days:
+                route.dates = default_dates
+
         return cls(
             monitor=MonitorConfig.from_dict(data.get("monitor", {})),
-            routes=[Route.from_dict(item) for item in data.get("routes", [])],
-            default_dates=DateConfig.from_dict(data.get("default_dates", {})),
+            routes=routes,
+            default_dates=default_dates,
             notifications=NotificationsConfig.from_dict(data.get("notifications", {})),
             captcha=CaptchaConfig.from_dict(data.get("captcha", {})),
+            flyai=FlyAIConfig.from_dict(data.get("flyai", {})),
         )
 
 
@@ -238,7 +299,7 @@ def load_config(config_path: Union[str, Path]) -> AppConfig:
 
 
 def _validate_config(config: AppConfig) -> None:
-    valid_sources = {"ctrip", "spring", "juneyao", "shenzhen"}
+    valid_sources = {"flyai", "flyai_train", "spring"}
     for source in config.monitor.sources:
         if source not in valid_sources:
             raise ConfigError(

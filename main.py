@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FlightFind - 航班价格监控工具
-支持数据源: ctrip(携程), spring(春秋航空)
+支持数据源: flyai(飞猪机票), flyai_train(高铁/火车), spring(春秋航空)
 """
 
 import asyncio
@@ -13,28 +13,25 @@ from pathlib import Path
 from typing import Dict, List
 
 from src.config import load_config
-from src.ctrip_crawler import CtripCrawler
 from src.database import Database
 from src.exporter import FlightExporter
-from src.juneyao_crawler import JuneyaoCrawler
+from src.flyai_crawler import FlyAICrawler, FlyAITrainCrawler
 from src.notifier import Notifier
-from src.shenzhen_crawler import ShenzhenCrawler
 from src.spring_crawler import SpringCrawler
 from src.utils import setup_logging
 
 logger = logging.getLogger(__name__)
 
 
-def create_crawler(source: str, headless: bool):
+def create_crawler(source: str, headless: bool = True, flyai_config=None):
     """创建爬虫实例"""
-    if source == "spring":
+    if source == "flyai":
+        return FlyAICrawler(flyai_config=flyai_config)
+    elif source == "flyai_train":
+        return FlyAITrainCrawler(flyai_config=flyai_config)
+    elif source == "spring":
         return SpringCrawler(headless=headless)
-    elif source == "juneyao":
-        return JuneyaoCrawler(headless=headless)
-    elif source == "shenzhen":
-        return ShenzhenCrawler(headless=headless)
-    else:  # 默认使用 ctrip
-        return CtripCrawler(headless=headless)
+    raise ValueError(f"Unsupported source: {source}")
 
 
 class FlightMonitor:
@@ -62,7 +59,8 @@ class FlightMonitor:
         # 初始化所有数据源的爬虫
         for source in self.config.monitor.sources:
             logger.info("初始化爬虫: %s", source)
-            crawler = create_crawler(source, self.config.monitor.headless)
+            crawler = create_crawler(source, self.config.monitor.headless,
+                                     flyai_config=self.config.flyai)
             await crawler.init()
             self.crawlers[source] = crawler
 
@@ -72,12 +70,13 @@ class FlightMonitor:
         logger.info("数据源: %s", ", ".join(self.config.monitor.sources))
         logger.info("监控航线: %d 条", len(self.config.routes))
         for route in self.config.routes:
+            route_dates = route.dates.resolved_dates()
             logger.info(
                 "  - %s -> %s, 阈值=%d, 日期数=%d",
                 route.from_city,
                 route.to_city,
                 route.low_price_threshold,
-                len(route.dates.absolute_dates),
+                len(route_dates),
             )
 
     async def run_check(self) -> None:
@@ -107,13 +106,14 @@ class FlightMonitor:
 
         for route in self.config.routes:
             route_start = datetime.now()
+            route_dates = route.dates.resolved_dates()
 
             try:
                 logger.info("查询航线 %s -> %s", route.from_city, route.to_city)
                 flights = await crawler.search_flights(route)
             except Exception as exc:
                 logger.error("查询失败: %s -> %s - %s", route.from_city, route.to_city, exc)
-                for target_date in route.dates.absolute_dates:
+                for target_date in route_dates:
                     export_rows.append(
                         self._build_export_row(
                             route_from=route.from_city,
@@ -128,13 +128,13 @@ class FlightMonitor:
                 continue
 
             # 按日期分组
-            flights_by_date = {d: [] for d in route.dates.absolute_dates}
+            flights_by_date = {d: [] for d in route_dates}
             for flight in flights:
                 flight_date = flight.get("flight_date")
                 if flight_date in flights_by_date:
                     flights_by_date[flight_date].append(flight)
 
-            for target_date in route.dates.absolute_dates:
+            for target_date in route_dates:
                 date_flights = flights_by_date.get(target_date, [])
 
                 if not date_flights:
